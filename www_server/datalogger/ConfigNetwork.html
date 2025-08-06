@@ -1,0 +1,79 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=auto">
+  <title>COGNETi-TEC - Configurações do Acesso Remoto</title>
+  <link href="Style.css" rel="stylesheet">
+</head>
+<body>
+  <script src="scripts/jquery-3.6.0.min.js"></script>
+  <script src="scripts/configNetwork.js"></script>
+  <h1>COGNETi-TEC - Configurações do Acesso Remoto</h1>
+  <h2>
+    <a href="Home.html">Home</a> |
+    <a href="ConfigDevice.html">Configurações do Dispositivo</a> |
+    <a href="ConfigNetwork.html">Configurações da Rede</a> |
+    <a href="NewDevice.html">Novo Dispositivo</a> |
+    <a href="NewFw.html">Novo Firmware</a> |
+    <a href="Reboot.html" onclick="return confirm('Reiniciar módulo?')">Reiniciar</a>
+  </h2>
+  <h3>
+  <table>
+    <tr>
+      <th colspan="2" class="msg">Configuração do Dispositivo</th>
+    </tr>
+    
+    <tr>
+      <th>Medidor</th>
+      <td id="device"><select name="device_list" id="device_list"></select><input type="hidden" id="config_id" name="config_id" value="0"></td>
+    </tr>
+    
+    <!--<tr>-->
+    <!--  <th>Versão FW</th>-->
+    <!--  <td id="ver_fw"> <input type="text" id="fw_version" name="fw_version" value="" size="25" maxlength="29"></td>-->
+    <!--</tr>-->
+	
+	  <tr>
+      <th rowspan="3">GPRS</th>
+      <td>APN:                <input type="text" id="apn" name="apn" value="" size="25" maxlength="29"></td>
+    </tr>
+	
+	<tr>
+      <td>Usuário APN:        <input type="text"  id="gprs_user" name="gprsuser" value="" size="25" maxlength="29"></td>
+    </tr>
+	  <tr>
+      <td>Senha APN:          <input type="text" id="gprs_pw" name="gprspass" value="" size="25" maxlength="29"></td>
+    </tr>	
+	<tr>
+    <th rowspan="4">Servidor DAEE</th>
+	 <td>URL: <input type="text" id="data_server_url" name="ClientServerDAEE" value="" size="25" maxlength="29"></td>
+	</tr>
+
+    <tr>
+	 <td>Porta:   <input type="text" id="data_server_port" name="portServerDAEE" value="" size="25" maxlength="29"></td>
+	</tr>
+
+  <tr>
+    <td>Usuário:   <input type="text" id="user" name="userServerDAEE" value="" size="25" maxlength="29"></td>
+   </tr>
+
+   <tr>
+    <td>Chave:   <input type="text" id="key" name="keyServerDAEE" value="" size="25" maxlength="29"></td>
+   </tr>
+
+	 <tr>
+      <th rowspan="2">Servidor Config</th>
+      <td>URL: <input type="text" id="config_server_url" name="ClientServer" value="" size="25" maxlength="29"></td>
+    </tr>
+	
+	<tr>
+	 <td>Porta: <input type="text" id="config_server_port" name="portServer" value=""size="25" maxlength="29"></td>
+	</tr>
+	
+    <tr>
+      <th colspan="2" class="msg"><input id="save" type="submit" value="Gravar" onClick="submit_form()"></th>
+    </tr>
+  </table>
+  </h3>
+</body>
+</html>

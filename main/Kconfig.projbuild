@@ -1,0 +1,17 @@
+menu "Data Logger Configuration"
+    choice MODEM_DEVICE
+        prompt "Choose supported modem device (DCE)"
+        default MODEM_DEVICE_SARA_G450
+        help
+            Select modem device connected to the ESP DTE.
+        config MODEM_DEVICE_SIM800
+            bool "SIM800"
+            help
+                SIMCom SIM800L is a GSM/GPRS module.
+                It supports Quad-band 850/900/1800/1900MHz.
+        config MODEM_DEVICE_SARA_G450
+            bool "SARA-G450"
+            help
+                uBlox module SARA-G450.
+    endchoice
+endmenu

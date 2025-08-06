@@ -1,0 +1,207 @@
+var hidden, visibilityChange;
+if (typeof document.hidden !== "undefined") {
+    hidden = "hidden";
+    visibilityChange = "visibilitychange";
+} else if (typeof document.mozHidden !== "undefined") {
+    hidden = "mozHidden";
+    visibilityChange = "mozvisibilitychange";
+} else if (typeof document.msHidden !== "undefined") {
+    hidden = "msHidden";
+    visibilityChange = "msvisibilitychange";
+} else if (typeof document.webkitHidden !== "undefined") {
+    hidden = "webkitHidden";
+    visibilityChange = "webkitvisibilitychange";
+}
+
+document.addEventListener(visibilityChange, acao, false);
+
+function acao() {
+    console.log("Mudando de aba");
+}
+
+
+
+function submit_form(form) {
+    if (confirm('Gravar a configuração?')) {
+        let op_config = {};
+
+        try{
+            op_config.serial_number = $("#serial_number").val();
+            op_config.company = $("#company").val();
+            op_config.ds_start = $("#ds_start").val();
+            op_config.ds_end = $("#ds_end").val();
+            op_config.count_reset = $("#count_reset").prop("checked");
+            op_config.keep_alive = $("#keep_alive").val();
+            op_config.log1 = $("#log1").prop("checked");
+            op_config.log2 = $("#log2").prop("checked");
+            op_config.ativar_cali = $("#ativar_cali").prop("checked");
+            op_config.zerar = $("#zerar").prop("checked");
+            op_config.fcorr = $("#fcorr").prop("checked");
+            op_config.ref1_cali = $("#ref1_cali").val();
+            op_config.ref2_cali = $("#ref2_cali").val();
+            op_config.analog1 = $("#analog1").val();
+            op_config.analog2 = $("#analog2").val();
+            op_config.post_en = $("#post_en").prop("checked");
+            op_config.get_en = $("#get_en").prop("checked");
+            op_config.config_server_url = $("#config_server_url").val();
+            op_config.config_server_port = parseInt($("#config_server_port").val());
+            op_config.config_server_path = $("#config_server_path").val();
+           
+            $.ajax({
+                contentType: 'application/json',
+                data: JSON.stringify(op_config),
+                dataType: 'text',
+                success: function(data){
+                    alert("Gravação Concluída");
+                },
+                error: function(){
+                    console.log("Device control failed");
+                },
+                processData: false,
+                type: 'POST',
+                url: '/configOpSave'
+            });
+        }catch(e) {
+            alert("Valores incorretos!");
+        }
+    }
+}
+
+$( document ).ready(function() {
+    $.ajax({
+        type: "GET",
+        url: "/configOpGet",
+        data: "",
+        cache: false,
+        success: function(data){
+            let obj = JSON.parse(data);
+            $("#serial_number").val(obj.serial_number);
+            $("#company").val(obj.company);
+            $("#ds_start").val(obj.ds_start);
+            $("#ds_end").val(obj.ds_end);
+            $("#count_reset").prop("checked", obj.count_reset);
+            $("#keep_alive").val(obj.keep_alive);
+            $("#log1").prop("checked", obj.log1);
+            $("#log2").prop("checked", obj.log2);
+            $("#ativar_cali").prop("checked", obj.ativar_cali);
+            $("#zerar").prop("checked", obj.zerar);
+            $("#fcorr").prop("checked", obj.fcorr);
+            $("#ref1_cali").val(obj.ref1_cali);
+            $("#ref2_cali").val(obj.ref2_cali);
+            $("#analog1").val(obj.analog1);
+            $("#analog2").val(obj.analog2);
+            $("#post_en").prop("checked", obj.post_en);
+            $("#get_en").prop("checked", obj.get_en);
+            $("#config_server_url").val(obj.config_server_url);
+            $("#config_server_port").val(obj.config_server_port);
+            $("#config_server_path").val(obj.config_server_path);
+        }
+        
+    });
+
+        var trSensor = document.querySelector("#LeituraSensor");
+        var analogdata1 = trSensor.querySelector("#analog1");
+        var analog1Value= analogdata1.name;
+        console.log("Analogico1 ="+analog1Value);
+});
+
+$( document ).ready(function() {
+    $.ajax({
+        type: "GET",
+        url: "/configOpGet",
+        data: "",
+        cache: false,
+        success: function(data){
+            let obj = JSON.parse(data);
+            $("#company_label").html(obj.company);
+        }
+    });
+});
+
+$( document ).ready(function() {
+	
+var intervalo = setInterval(function() {
+
+       $.ajax({
+        type: "GET",
+        url: "/configOpGet",
+        data: "",
+        cache: false,
+        success: function(data){
+            let dados = JSON.parse(data);
+            if(dados.ativar_cali)
+            {
+            $("#analog1").val(dados.analog1);
+            $("#analog2").val(dados.analog2);
+            console.log(dados.ativar_cali);
+            }
+                       
+        }
+       
+    });
+   
+ }, 1000);
+});
+//clearInterval(intervalo); 
+
+
+/*
+$( document ).ready(function() {
+
+useEffect(() => {
+	let interval = setInterval(() => {
+		const res = await fetch(`https://jsonplaceholder.typicode.com/posts`);
+    console.log("Consegui!!!!");
+	}, 2000);
+	return () => {
+		clearInterval(interval);
+	};
+}, []);
+
+});
+*/
+
+/*
+$( document ).ready(function() {
+    console.log( "ready!" );
+    var documento;
+    var AnalogData = new XMLHttpRequest();
+    AnalogData.onreadystatechange = function ()
+
+                {
+                    if (AnalogData.readyState == 4 && AnalogData.status == 200)
+
+                    {
+                        documento=AnalogData.response;
+                        documento = JSON.parse(documento);
+                        console.log(documento.ativar_cali);                                                       
+                    }
+                };
+
+   AnalogData.open("GET", "/configOpGet");
+   
+   AnalogData.send();
+   
+});
+*/ 
+
+/*
+$( document ).ready(function() {
+    $.ajax({
+        type: "GET",
+        url: "/configOpGet",
+        data: "",
+        cache: false,
+        success: function(data){
+            let dados = JSON.parse(data);
+            $("#ativar_cali").prop("checked", dados.ativar_cali);
+            $("#analog1").val(dados.analog1);
+            $("#analog2").val(dados.analog2);
+             console.log(dados.ativar_cali);
+        }
+       
+    });
+
+});
+
+*/ 

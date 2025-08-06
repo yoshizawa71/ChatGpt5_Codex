@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manutenção</title>
+   <link rel="stylesheet" href="/Style.css">
+  <link rel="stylesheet" href="Maintenance.css">
+</head>
+<body>
+  <h1><span id="company_label"></span> - Configurações de Manutenção</h1>
+  <h2>
+    <a href="/">Home</a> |
+    <a href="ConfigDevice.html">Dispositivo</a> |
+	<a href="ConfigNetwork.html">Rede</a> |
+	<a href="ConfigOperation.html">Operação</a> |
+	<a href="Maintenance.html">Manutenção</a>|
+    <a href="RegisterView.html">Registros</a> |
+  <a href="Exit.html" onclick="return confirm('Sair do Modo Confirmação?')">Sair</a>
+  </h2>
+  <h3>
+    <table>
+      <tr>
+        <th colspan="3" class="msg">Manutenção</th>
+      </tr>
+      
+<tr>
+      <th rowspan="4">Calibração
+      <p></p>
+	  <div class="onoff">
+	  <input type="checkbox" class="toggle" id="ativar_cali" name="ativar_cali">
+	  <label for="ativar_cali"></label>
+	   </div>
+	  <p id="estado">Ativar</p>
+      </th>
+      
+ </tr>
+      <tr>
+        <td><label for="sensor_select">Selecione o Sensor: </label>
+        
+          <select id="sensor_select">
+            <option value="1">Sensor 1</option>
+            <option value="2">Sensor 2</option>
+          </select>
+        </td>
+        <td>
+          <label for="ref_select">Referência: </label>
+          <select id="ref_select">
+            <option value="0">0</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="20">20</option>
+          </select>
+          <label for="unit_select">Unidade: </label>
+          <select id="unit_select">
+            <option value="bar">bar</option>
+            <option value="mca">m.c.a</option>
+            <option value="psi">psi</option>
+          </select>
+        </td>
+      </tr>
+      <tr>
+        <td colspan="3">
+          <p>Sensor selecionado: <span id="sensor_value">[Aguardando dados]</span></p>
+        </td>
+      </tr>
+      <tr>
+        <td colspan="3">
+          <input type="button" id="calibrate-factor" value="Salvar Ponto de Calibração">
+        </td>
+      </tr>
+      
+      <tr>
+      <th rowspan="1">Teste do Rele</th>
+        <td colspan="3">
+          <input type="button" id="btnRele" value="Ligar">
+        </td>
+      </tr>
+           
+      
+    </table>
+  </h3>
+
+  <script src="scripts/jquery-3.6.0.min.js"></script>
+  <script src="scripts/maintenance.js"></script>
+  <script src="scripts/connection_monitor.js"></script> 
+</body>
+</html>

@@ -1,0 +1,13 @@
+Calculo de potência
+
+
+Converter tensão para corrente usando o leitor 4 a 20ma com conversor 0-5V
+Vmax = 5V
+Vmin = 0V
+V é o valor recebido
+
+I[mA]=(((V-Vmin)/Vmax-Vmin)*16)+4
+
+P[w]= V[110]*I[mA]
+
+Kwh = (P[w] * T[horas])/1000

@@ -1,0 +1,54 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=auto">
+  <title>COGNETi-TEC - Configurações </title>
+  <link href="Style.css" rel="stylesheet">
+</head>
+<body>
+  <script src="scripts/jquery-3.6.0.min.js"></script>
+  <script src="scripts/configHome.js"></script>
+  <h1>COGNETi-TEC - Configurações</h1>
+  <h2>
+    <a href="Home.html">Home</a> |
+    <a href="ConfigDevice.html">Configurações do Dispositivo</a> |
+    <a href="ConfigNetwork.html">Configurações da Rede</a> |
+    <a href="NewDevice.html">Novo Dispositivo</a> |
+    <a href="NewFw.html">Novo Firmware</a> |
+    <a href="Reboot.html" onclick="return confirm('Reiniciar módulo?')">Reiniciar</a>
+	
+  </h2>
+  <h3>
+  <table>
+    <tr>
+      <th colspan="2" class="msg">Bem-vindo à Interface Web</th>
+    </tr>
+    <tr>
+      <th>Identificação</th><td id="device"><select name="device_list" id="device_list"></select></td>
+    </tr>
+    <tr>
+      <th>APN</th><td id="apn">#apn#</td>
+    </tr>
+    <tr>
+	 <th>Servidor do DAEE</th><td id="data_server_url">#ClientServerDAEE#</td>
+    </tr>
+    <tr>
+	 <th>Usuário</th><td id="user">#usuario#</td>
+    </tr>
+    <tr>
+	 <th>Frequência de envio</th><td id="send_period">#timesend#</td>
+    </tr>
+    <tr>
+	 <th>Escala da unidade por cada Pulso</th><td id="scale">#escala#</td>
+    </tr>	
+    <!-- <tr>
+      <th>Inicializações</th><td>#bootCount#</td>
+    </tr>
+    
+      <th>Tempo Ativo</th><td>#active#</td>
+    </tr> -->
+
+  </table>
+  </h3>
+</body>
+</html>

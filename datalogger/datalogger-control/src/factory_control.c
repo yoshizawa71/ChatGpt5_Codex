@@ -1,0 +1,1973 @@
+#include <string.h>
+#include <fcntl.h>
+#include <datalogger_control.h>
+#include "datalogger_driver.h"
+#include <time.h>
+#include "driver/sdmmc_host.h"
+#include "esp_http_server.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_log.h"
+#include "esp_event.h"
+#include "esp_vfs.h"
+#include "cJSON.h"
+#include "mdns.h"
+//#include "esp_spiffs.h"
+#include "esp_littlefs.h"
+#include "lwip/apps/netbiosns.h"
+#include "datalogger_driver.h"
+#include "oled_display.h"
+#include "sara_r422.h"
+#include "sdmmc_driver.h"
+#include "pressure_meter.h"
+#include "pulse_meter.h"
+#include "rele.h"
+#include "esp_wifi.h"
+
+#include "ff.h"
+//#include "ulp_datalogger-control.h"
+#include "sleep_control.h"
+
+#include "pressure_calibrate.h"
+#include "system.h"
+#include "TCA6408A.h"
+
+#define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
+#define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
+
+// Define a flag for shutdown request
+bool server_shutdown_requested = false;
+static bool save_button_action = false;
+bool user_initiated_exit = false;
+
+extern bool first_factory_setup;
+extern QueueHandle_t xQueue_Factory_Control;
+bool Send_FactoryControl_Task_ON;
+bool Receive_Response_FactoryControl = false;
+
+#define MDNS_HOST_NAME  "datalogger"
+#define SERVER_BASE_PATH  "/esp_web_server"
+#define SERVER_WEB_PARTITION     "esp_web_server"  // label idêntico ao CSV
+#define SUPER_USER_KEY  "admin1234"
+
+#define FILE_PATH_MAX (ESP_VFS_PATH_MAX + 128)
+//#define SCRATCH_BUFSIZE (10240)
+#define SCRATCH_BUFSIZE (16384)
+
+#define NUM_CAL_POINTS 5
+
+
+typedef struct rest_server_context {
+    char base_path[ESP_VFS_PATH_MAX + 1];
+    char scratch[SCRATCH_BUFSIZE];
+} rest_server_context_t;
+
+static const char *TAG = "Factory Control";
+
+static esp_err_t init_server_fs(void);
+static void init_mdns(void);
+static void start_factory_routine(void);
+static void stop_factory_server(void);
+
+static esp_err_t start_server(void);
+static httpd_handle_t server = NULL;
+
+//**************************************
+//   Desativar wifi e servidor acess point
+//**************************************
+//static esp_err_t deinit_server_fs(void);
+static void deinit_mdns(void);
+static esp_err_t stop_server(httpd_handle_t server);
+
+//------------Tasks--------------
+static void shutdown_task(void* pvParameters);
+static void restart_ap_task(void *pvParameters);
+static void exit_ap_task(void *pvParameters);
+//-------------------------------
+static esp_err_t rest_common_get_handler(httpd_req_t *req);
+static esp_err_t config_device_get_handler(httpd_req_t *req);
+static esp_err_t get_time_handler(httpd_req_t *req);
+static esp_err_t config_device_post_handler(httpd_req_t *req);
+static esp_err_t connect_sta_post_handler(httpd_req_t *req);
+static esp_err_t status_sta_get_handler(httpd_req_t *req);
+//static esp_err_t disconnect_ap_handler(httpd_req_t *req);
+static esp_err_t config_network_get_handler(httpd_req_t *req);
+static esp_err_t config_network_post_handler(httpd_req_t *req);
+static esp_err_t config_login_post_handler(httpd_req_t *req);
+static esp_err_t config_operation_get_handler(httpd_req_t *req);
+static esp_err_t config_operation_post_handler(httpd_req_t *req);
+static esp_err_t exit_device_post_handler(httpd_req_t *req);
+static esp_err_t ping_handler(httpd_req_t *req);
+
+//------------------------------------------------------------------
+
+static esp_err_t config_maintenance_get_handler(httpd_req_t *req);
+static esp_err_t config_maintenance_post_handler(httpd_req_t *req);
+
+static esp_err_t rele_activate(httpd_req_t *req);
+
+//------------------------------------------------------------------
+static esp_err_t load_registers_get_handler(httpd_req_t *req);
+static esp_err_t delete_registers_get_handler(httpd_req_t *req);
+
+//static void update_last_interaction(void);
+
+// Variável global para armazenar o último tick de interação
+static TickType_t last_interaction_ticks;
+static time_t last_interaction;
+static bool super_user_logged = false;
+
+static sensor_t sensor_em_calibracao = analog_1;
+static pressure_unit_t unidade_em_calibracao = PRESSURE_UNIT_BAR;
+
+extern bool time_manager_task_ON;
+
+
+xTaskHandle Factory_Config_TaskHandle = NULL;
+
+
+// Variáveis globais para cache do estado
+//static bool sta_connected = false;
+static bool sta_status_task = false;
+ bool ap_active = true;
+static char sta_ssid[32] = {0};
+static char sta_password[64] = {0};
+
+// Variáveis temporárias para calibração
+static bool temp_ativar_cali = false;
+static bool temp_zerar = false;
+static bool temp_fcorr = false;
+static bool rele_state = false; // Estado do relé
+
+void update_last_interaction(void)
+{
+   last_interaction_ticks = xTaskGetTickCount();
+    ESP_LOGI(TAG, "Last interaction updated at tick: %u", last_interaction_ticks);
+}
+
+TickType_t get_factory_routine_last_interaction(void)
+{
+   return last_interaction_ticks;
+}
+
+static void start_factory_routine(void)
+{
+    update_last_interaction();
+    init_mdns();
+    init_server_fs();
+    start_server();
+}
+
+static void stop_factory_server(void)
+{
+	deinit_mdns();
+//	deinit_server_fs();
+	stop_server(server);
+
+	return;
+	 
+}
+
+static void initialise_mdns(void)
+{
+    mdns_init();
+    mdns_hostname_set(MDNS_HOST_NAME);
+    mdns_instance_name_set(MDNS_HOST_NAME);
+
+    mdns_txt_item_t serviceTxtData[] = {
+        {"board", "esp32"},
+        {"path", "/"}
+    };
+
+    ESP_ERROR_CHECK(mdns_service_add("ESP32-WebServer", "_http", "_tcp", 80, serviceTxtData,
+                                     sizeof(serviceTxtData) / sizeof(serviceTxtData[0])));
+}
+
+static void deinitialise_mdns(void)
+{
+	mdns_free();
+}
+
+static void init_mdns(void)
+{
+    initialise_mdns();
+    netbiosns_init();
+    netbiosns_set_name(MDNS_HOST_NAME);
+}
+
+static void deinit_mdns(void)
+{
+    deinitialise_mdns();
+    netbiosns_stop();
+}
+
+static esp_err_t init_server_fs(void)
+{
+      esp_vfs_littlefs_conf_t conf = {
+        .base_path = SERVER_BASE_PATH,          // Ponto de montagem do FS (sistema)
+        .partition_label = SERVER_WEB_PARTITION,     // Label definido no partition_table.csv
+        .format_if_mount_failed = false,      // Formatar se falhar ao montar
+        .dont_mount = false,
+    };
+
+    // Use settings defined above to initialize and mount LittleFS filesystem.
+    // Note: esp_vfs_littlefs_register is an all-in-one convenience function.
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find LittleFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
+        }
+         return ESP_FAIL;
+    }
+
+    // Exibe informações de uso do FS
+    size_t total = 0, used = 0;
+    ret = esp_littlefs_info(conf.partition_label, &total, &used);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao obter infos do LittleFS (%s)", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "LittleFS total: %d KB, usado: %d KB", total / 1024, used / 1024);
+    }
+    
+       return ESP_OK;
+    
+}
+
+/*
+static esp_err_t deinit_server_fs(void)
+{   
+        // [ALTERAÇÃO] desregistra o VFS do LittleFS
+    esp_err_t ret = esp_vfs_littlefs_unregister("littlefs");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao desregistrar LittleFS (%s)", esp_err_to_name(ret));
+        return ESP_FAIL;
+    } else {
+        ESP_LOGI(TAG, "LittleFS desregistrado com sucesso");
+        return ESP_OK;
+    }
+}
+*/
+static esp_err_t start_server(void)
+{
+    super_user_logged = false;
+
+    rest_server_context_t *rest_context = calloc(1, sizeof(rest_server_context_t));
+    if(!rest_context)
+    {
+        ESP_LOGE(TAG, "No memory for rest context");
+        return ESP_FAIL;
+    }
+    strlcpy(rest_context->base_path, SERVER_BASE_PATH, sizeof(rest_context->base_path));
+
+//    httpd_handle_t server = NULL;
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.stack_size = 10240; // Aumenta a pilha para evitar falhas
+    config.max_uri_handlers = 20;
+//    config.max_open_sockets = 7; // Mais sockets para múltiplas conexões
+    config.lru_purge_enable = true; // Limpa sockets ociosos
+    config.uri_match_fn = httpd_uri_match_wildcard;
+
+    ESP_LOGI(TAG, "Starting HTTP Server");
+    if(httpd_start(&server, &config) != ESP_OK) {
+        ESP_LOGE(TAG, "Start server failed");
+        free(rest_context);
+        return ESP_FAIL;
+    }
+//--------------------------------------------    
+// Registrar o novo endpoint
+
+    httpd_uri_t get_time_uri = {
+        .uri = "/get_time",
+        .method = HTTP_GET,
+        .handler = get_time_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &get_time_uri);    
+    
+//--------------------------------------------
+    httpd_uri_t config_device_post_uri = {
+        .uri = "/configDeviceSave",
+        .method = HTTP_POST,
+        .handler = config_device_post_handler,
+        .user_ctx = rest_context
+    };
+
+    httpd_register_uri_handler(server, &config_device_post_uri);
+//--------------------------------------------
+    httpd_uri_t connect_sta_post_uri = {
+        .uri       = "/connect_sta",
+        .method    = HTTP_POST,
+        .handler   = connect_sta_post_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &connect_sta_post_uri);
+    
+//--------------------------------------------
+    httpd_uri_t exit_device_uri = {
+        .uri = "/exitDevice",
+        .method = HTTP_POST,
+        .handler = exit_device_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &exit_device_uri);
+
+//--------------------------------------------
+        /* URI handler for light brightness control */
+    httpd_uri_t config_network_post_uri = {
+        .uri = "/configNetworkSave",
+        .method = HTTP_POST,
+        .handler = config_network_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_network_post_uri);
+
+//--------------------------------------------
+    httpd_uri_t config_login_post_uri = {
+        .uri = "/configOpLogin",
+        .method = HTTP_POST,
+        .handler = config_login_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_login_post_uri);
+
+//--------------------------------------------
+    httpd_uri_t config_operation_post_uri = {
+        .uri = "/configOpSave",
+        .method = HTTP_POST,
+        .handler = config_operation_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_operation_post_uri);
+    
+//----------------------------------------------------------
+    httpd_uri_t config_maintenance_post_uri = {
+        .uri = "/configMaintSave",
+        .method = HTTP_POST,
+        .handler = config_maintenance_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_maintenance_post_uri);
+
+//--------------------------------------------  
+ httpd_uri_t rele_get_uri = {
+    .uri = "/rele_device",
+    .method = HTTP_GET,
+    .handler = rele_activate,
+    .user_ctx = rest_context
+};
+httpd_register_uri_handler(server, &rele_get_uri);
+
+httpd_uri_t rele_post_uri = {
+    .uri = "/rele_device",
+    .method = HTTP_POST,
+    .handler = rele_activate,
+    .user_ctx = rest_context
+};
+httpd_register_uri_handler(server, &rele_post_uri);
+//--------------------------------------------
+
+    httpd_uri_t config_device_get_uri = {
+        .uri = "/configDeviceGet",
+        .method = HTTP_GET,
+        .handler = config_device_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_device_get_uri);
+
+//--------------------------------------------
+    httpd_uri_t status = {
+        .uri       = "/status_sta",
+        .method    = HTTP_GET,
+        .handler   = status_sta_get_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &status);
+    
+//--------------------------------------------
+    httpd_uri_t config_network_get_uri = {
+        .uri = "/configNetworkGet",
+        .method = HTTP_GET,
+        .handler = config_network_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_network_get_uri);
+
+//--------------------------------------------
+    httpd_uri_t config_operation_get_uri = {
+        .uri = "/configOpGet",
+        .method = HTTP_GET,
+        .handler = config_operation_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_operation_get_uri);
+    
+//----------------------------------------------------------
+    httpd_uri_t config_maintenance_get_uri = {
+        .uri = "/configMaintGet",
+        .method = HTTP_GET,
+        .handler = config_maintenance_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &config_maintenance_get_uri); 
+//----------------------------------------------------------    
+
+    httpd_uri_t load_registers_get_uri = {
+        .uri = "/loadRegisters",
+        .method = HTTP_GET,
+        .handler = load_registers_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &load_registers_get_uri);
+    
+//----------------------------------------------------------
+//           Delete the file
+//----------------------------------------------------------
+
+  httpd_uri_t delete_registers_get_uri = {
+        .uri = "/deleteRegisters",
+        .method = HTTP_GET,
+        .handler = delete_registers_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &delete_registers_get_uri);
+ 
+//----------------------------------------------------------
+// AP monitoring by ping
+//----------------------------------------------------------
+
+httpd_uri_t ping_uri = {
+    .uri      = "/ping",
+    .method   = HTTP_GET,
+    .handler  = ping_handler,
+    .user_ctx = NULL
+};
+httpd_register_uri_handler(server, &ping_uri); // Coloque isso onde inicializa o 
+
+//----------------------------------------------------------
+
+    /* URI handler for getting web server files */
+    httpd_uri_t common_get_uri = {
+        .uri = "/*",
+        .method = HTTP_GET,
+        .handler = rest_common_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &common_get_uri);
+
+    return ESP_OK;
+}
+
+//*******************************************
+// Function for stopping the server
+
+static esp_err_t stop_server(httpd_handle_t server)
+{
+/*
+	 * @brief   Unregister a URI handler
+	 *
+	 * @param[in] handle    handle to HTTPD server instance
+	 * @param[in] uri       URI string
+	 * @param[in] method    HTTP method
+	 *
+	 * @return
+	 *  - ESP_OK : On successfully deregistering the handler
+	 *  - ESP_ERR_INVALID_ARG : Null arguments
+	 *  - ESP_ERR_NOT_FOUND   : Handler with specified URI and method not found
+
+	esp_err_t httpd_unregister_uri_handler(httpd_handle_t handle,
+	                                       const char *uri, httpd_method_t method);
+
+	*/
+	if (server != NULL)
+	{
+	    ESP_LOGI(TAG, "*** Stopping HTTP Server ***");
+	    if(httpd_stop(server) != ESP_OK) {
+	        printf("*** Stop server failed ***\n");
+	        return ESP_FAIL;
+	    }
+	    else
+	       {
+	    	printf("*** Stop server Success ***\n");
+	    	return ESP_OK;
+	        }
+	}
+
+	return ESP_ERR_INVALID_ARG;
+}
+//*******************************************
+//HTTP HANDLER FUNCTIONS
+
+#define CHECK_FILE_EXTENSION(filename, ext) (strcasecmp(&filename[strlen(filename) - strlen(ext)], ext) == 0)
+
+static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filepath)
+{
+    const char *type = "text/plain";
+    if (CHECK_FILE_EXTENSION(filepath, ".html")) {
+        type = "text/html";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".js")) {
+        type = "application/javascript";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".css")) {
+        type = "text/css";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".png")) {
+        type = "image/png";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".ico")) {
+        type = "image/x-icon";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".svg")) {
+        type = "text/xml";
+    }
+    return httpd_resp_set_type(req, type);
+}
+
+static esp_err_t rest_common_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    char filepath[FILE_PATH_MAX];
+
+    rest_server_context_t *rest_context = (rest_server_context_t *)req->user_ctx;
+    strlcpy(filepath, rest_context->base_path, sizeof(filepath));
+    if (req->uri[strlen(req->uri) - 1] == '/') {
+        strlcat(filepath, "/Home.html", sizeof(filepath));
+    } else if(strcmp(req->uri, "/ConfigOperationLogin.html") == 0 || strcmp(req->uri, "/ConfigOperation.html") == 0) {
+//    } else if(strcmp(req->uri, "/ConfigAdmin.html") == 0 || strcmp(req->uri, "/ConfigOperation.html") == 0) {
+        if(super_user_logged) {
+            strlcat(filepath, "/ConfigOperation.html", sizeof(filepath));
+        } else {
+            strlcat(filepath, "/ConfigOperationLogin.html", sizeof(filepath));
+        }
+    } else {
+        strlcat(filepath, req->uri, sizeof(filepath));
+    }
+    int fd = open(filepath, O_RDONLY, 0);
+    if (fd == -1) {
+        ESP_LOGE(TAG, "Failed to open file : %s", filepath);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read existing file");
+        return ESP_FAIL;
+    }
+
+    set_content_type_from_file(req, filepath);
+
+    char *chunk = rest_context->scratch;
+    ssize_t read_bytes;
+    do {
+        /* Read file in chunks into the scratch buffer */
+        read_bytes = read(fd, chunk, SCRATCH_BUFSIZE);
+        if (read_bytes == -1) {
+            ESP_LOGE(TAG, "Failed to read file : %s", filepath);
+            close(fd);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read file");
+            return ESP_FAIL;
+        } else if (read_bytes > 0) {
+            /* Send the buffer contents as HTTP response chunk */
+            if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
+                close(fd);
+                ESP_LOGE(TAG, "File sending failed!");
+                /* Abort sending file */
+                httpd_resp_sendstr_chunk(req, NULL);
+                /* Respond with 500 Internal Server Error */
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
+                return ESP_FAIL;
+            }
+        }
+    } while (read_bytes > 0);
+    /* Close file after sending complete */
+    close(fd);
+    ESP_LOGI(TAG, "File sending complete: %s", filepath);
+    /* Respond with an empty chunk to signal HTTP response completion */
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+
+static esp_err_t get_time_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "date", get_date());
+    cJSON_AddStringToObject(root, "time", get_time());
+    char *response = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+    cJSON_Delete(root);
+    free(response);
+    return ESP_OK;
+}
+
+static esp_err_t config_device_post_handler(httpd_req_t *req) {
+    int total_len = req->content_len;
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+    int cur_len = 0, received = 0;
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    ESP_LOGI(TAG, "JSON recebido: %s", buf);
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        ESP_LOGE(TAG, "Falha ao parsear JSON: %s", cJSON_GetErrorPtr());
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "JSON inválido");
+        return ESP_FAIL;
+    }
+
+    // Validar campos obrigatórios
+    cJSON *date_item = cJSON_GetObjectItem(root, "date");
+    cJSON *time_item = cJSON_GetObjectItem(root, "time");
+    if (!cJSON_IsString(date_item) || !cJSON_IsString(time_item)) {
+        ESP_LOGE(TAG, "Campos 'date' ou 'time' ausentes ou inválidos");
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Campos 'date' ou 'time' inválidos");
+        return ESP_FAIL;
+    }
+    // Validar formato de data (DD/MM/YYYY)
+    if (strlen(date_item->valuestring) != 10 || date_item->valuestring[2] != '/' || date_item->valuestring[5] != '/') {
+        ESP_LOGE(TAG, "Formato de data inválido: %s (esperado DD/MM/YYYY)", date_item->valuestring);
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Formato de data inválido");
+        return ESP_FAIL;
+    }
+    // Validar formato de hora (HH:MM ou HH:MM:SS)
+    if (strlen(time_item->valuestring) != 5 && strlen(time_item->valuestring) != 8) {
+        ESP_LOGE(TAG, "Formato de hora inválido: %s (esperado HH:MM ou HH:MM:SS)", time_item->valuestring);
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Formato de hora inválido");
+        return ESP_FAIL;
+    }
+
+    // Configurar parâmetros
+    set_device_id(cJSON_GetObjectItem(root, "id")->valuestring);
+    set_name(cJSON_GetObjectItem(root, "name")->valuestring);
+    set_phone(cJSON_GetObjectItem(root, "phone")->valuestring);
+    set_ssid_ap(cJSON_GetObjectItem(root, "ssid_ap")->valuestring);
+    set_password_ap(cJSON_GetObjectItem(root, "wifi_pw_ap")->valuestring);
+    set_activate_sta(cJSON_IsTrue(cJSON_GetObjectItem(root, "activate_sta")));
+    set_ssid_sta(cJSON_GetObjectItem(root, "ssid_sta")->valuestring);
+    set_password_sta(cJSON_GetObjectItem(root, "wifi_pw_sta")->valuestring);
+//    set_activate_send_freq_mode(cJSON_IsTrue(cJSON_GetObjectItem(root, "chk_freq_send_data")));
+//    set_activate_send_time_mode(cJSON_IsTrue(cJSON_GetObjectItem(root, "chk_time_send_data")));
+ //   set_send_period(cJSON_GetObjectItem(root, "send_period")->valueint);
+    set_deep_sleep_period(cJSON_GetObjectItem(root, "deep_sleep_period")->valueint);
+    save_pulse_zero(cJSON_IsTrue(cJSON_GetObjectItem(root, "save_pulse_zero")));
+    set_scale(cJSON_GetObjectItem(root, "scale")->valueint);
+    set_date(cJSON_GetObjectItem(root, "date")->valuestring); // Forma original
+    set_time(cJSON_GetObjectItem(root, "time")->valuestring); // Forma original
+    set_factory_config(cJSON_IsTrue(cJSON_GetObjectItem(root, "finished_factory")));
+    set_device_active(cJSON_IsTrue(cJSON_GetObjectItem(root, "device_active")));
+//    send_value(cJSON_IsTrue(cJSON_GetObjectItem(root, "send_value")));
+cJSON *mode = cJSON_GetObjectItem(root, "send_mode");
+if (cJSON_IsString(mode)) {
+    // grava "freq" ou "time" em dev_config.send_mode
+    set_send_mode(mode->valuestring);
+
+    if (is_send_mode_freq()) {
+        cJSON *p = cJSON_GetObjectItem(root, "send_period");
+        if (cJSON_IsNumber(p)) {
+            set_send_period(p->valueint);
+        }
+    }
+    else if (is_send_mode_time()) {
+            cJSON *arr = cJSON_GetObjectItem(root, "send_times");
+            if (cJSON_IsArray(arr) && cJSON_GetArraySize(arr) == 4) {
+               for (int i = 0; i < 4; i++) {
+                   cJSON *t = cJSON_GetArrayItem(arr, i);
+                    if (cJSON_IsNumber(t)) {
+                   // número válido 0–23
+                    set_send_time(i + 1, t->valueint);
+                     }
+                        else if (t && t->type == cJSON_NULL) {
+                        // campo apagado pelo usuário → volta a ser “sem valor”
+                        set_send_time(i + 1, -1);
+                        }
+        // caso o item esteja ausente ou de outro tipo, pula sem alterar
+               }
+            }
+    }
+}
+
+ // imprimir Json só para teste
+     const char *config_device = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, config_device);
+    free((void *)config_device);
+    cJSON_Delete(root);
+
+
+//    cJSON_Delete(root);
+save_button_action=true;//para saber que o botão de gravar foi acionado.
+    // Salvar configurações e atualizar data/hora
+    save_config();
+    config_system_time();
+    update_last_interaction();
+
+    httpd_resp_sendstr(req, "Post control value successfully");
+    return ESP_OK;
+}
+
+static esp_err_t config_operation_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    int total_len = req->content_len;
+    int cur_len = 0;
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+    int received = 0;
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    set_serial_number(cJSON_GetObjectItem(root, "serial_number")->valuestring);
+    set_company(cJSON_GetObjectItem(root, "company")->valuestring);
+    set_deep_sleep_start(cJSON_GetObjectItem(root, "ds_start")->valuestring);
+    set_deep_sleep_end(cJSON_GetObjectItem(root, "ds_end")->valuestring);
+    enable_reset_count(cJSON_IsTrue(cJSON_GetObjectItem(root, "count_reset")));
+    set_keep_alive(cJSON_GetObjectItem(root, "keep_alive")->valuestring);
+/*    enable_log_level_1(cJSON_IsTrue(cJSON_GetObjectItem(root, "log1")));
+    enable_log_level_2(cJSON_IsTrue(cJSON_GetObjectItem(root, "log2")));*/
+
+    enable_post(cJSON_IsTrue(cJSON_GetObjectItem(root, "post_en")));
+    enable_get(cJSON_IsTrue(cJSON_GetObjectItem(root, "get_en")));
+
+    set_config_server_url(cJSON_GetObjectItem(root, "config_server_url")->valuestring);
+    set_config_server_port(cJSON_GetObjectItem(root, "config_server_port")->valueint);
+    set_config_server_path(cJSON_GetObjectItem(root, "config_server_path")->valuestring);
+    
+    set_level_min(cJSON_GetObjectItem(root, "level_min")->valueint);
+    set_level_max(cJSON_GetObjectItem(root, "level_max")->valueint);
+    
+    cJSON_Delete(root);
+    httpd_resp_sendstr(req, "Post control value successfully");
+    save_config();
+    return ESP_OK;
+}
+
+static esp_err_t config_maintenance_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "--- INÍCIO /configMaintGet ---");
+    update_last_interaction();
+    
+        // Montagem do JSON de resposta normal
+cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        ESP_LOGE(TAG, "Falha ao criar objeto JSON");
+        // Retorna JSON de erro em vez de plain-text
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "erro", "Falha ao criar JSON");
+        const char *s = cJSON_PrintUnformatted(err);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, s);
+        free((void*)s);
+        cJSON_Delete(err);
+        return ESP_FAIL;
+    }
+    
+       // ===== PATCH: parsing híbrido JSON-like ou key=value =====
+    char buf[128];
+    char sensor_param[10] = "1";
+    char unit_param[10]   = "bar";
+    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1 && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+        ESP_LOGI(TAG, "Query string bruta: %s", buf);
+
+        // 1) Tenta parse JSON-like {"sensor":"2","unit":"bar"}
+        char *json = buf;
+        char *s_start = strstr(json, "\"sensor\":\"");
+        if (s_start) {
+            s_start += strlen("\"sensor\":\"");
+            char *s_end = strchr(s_start, '"');
+            if (s_end) {
+                size_t len = s_end - s_start;
+                if (len < sizeof(sensor_param)) strncpy(sensor_param, s_start, len);
+            }
+        }
+        char *u_start = strstr(json, "\"unit\":\"");
+        if (u_start) {
+            u_start += strlen("\"unit\":\"");
+            char *u_end = strchr(u_start, '"');
+            if (u_end) {
+                size_t len = u_end - u_start;
+                if (len < sizeof(unit_param)) strncpy(unit_param, u_start, len);
+            }
+        }
+
+        // 2) Se não era JSON-like, faz fallback em key=value
+        if (!s_start) {
+            char *p = strstr(buf, "sensor=");
+            if (p) {
+                p += strlen("sensor=");
+                sscanf(p, "%9[^&]", sensor_param);
+            }
+        }
+        if (!u_start) {
+            char *p = strstr(buf, "unit=");
+            if (p) {
+                p += strlen("unit=");
+                sscanf(p, "%9[^&]", unit_param);
+            }
+        }
+        ESP_LOGI(TAG, "sensor_param = %s, unit_param = %s", sensor_param, unit_param);
+    }
+    // ===== FIM PATCH =====
+
+    // Determinar sensor e unidade
+    sensor_t selected_sensor = (strcmp(sensor_param,"2")==0) ? analog_2 : analog_1;
+    pressure_unit_t selected_unit;
+    if      (strcmp(unit_param,"psi")==0) selected_unit = PRESSURE_UNIT_PSI;
+    else if (strcmp(unit_param,"mca")==0) selected_unit = PRESSURE_UNIT_MCA;
+    else                                   selected_unit = PRESSURE_UNIT_BAR;
+    ESP_LOGI(TAG, "selected_sensor = %s, selected_unit = %d",
+             selected_sensor==analog_1 ? "analog_1" : "analog_2",
+             selected_unit);
+
+    // ===== PATCH: atualiza globais e testa sensor desconectado =====
+    sensor_em_calibracao  = selected_sensor;
+    unidade_em_calibracao = selected_unit;
+
+    if (has_calibration()) {
+        float test_value = oneshot_analog_read(sensor_em_calibracao);
+        ESP_LOGI(TAG, "Teste antes de ativar: tensão lida = %.3f V", test_value);
+        if (test_value < SENSOR_DISCONNECTED_THRESHOLD) {
+            enable_calibration(false);
+            ESP_LOGW(TAG, "Sensor %s desconectado → desativando calibração.",
+                     selected_sensor==analog_1 ? "1" : "2");
+            cJSON *resp_err = cJSON_CreateObject();
+            cJSON_AddBoolToObject(resp_err, "ativar_cali", has_calibration());
+            cJSON_AddStringToObject(resp_err, "erro", "Sensor desconectado");
+            const char *err_str = cJSON_PrintUnformatted(resp_err);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, err_str);
+            cJSON_Delete(resp_err);
+            free((void*)err_str);
+            return ESP_OK;
+        }
+    }
+    
+    cJSON_AddBoolToObject(root, "ativar_cali", has_calibration());
+
+    if (has_calibration()) {
+        bool sensor_ok = false;
+        
+               float pressure = get_calibrated_pressure(sensor_em_calibracao,
+                                                unidade_em_calibracao,
+                                                &sensor_ok);
+        ESP_LOGI(TAG, ">>>>>get_calibrated_pressure pressure=%.3f, sensor_ok=%d",
+                 pressure, sensor_ok?1:0);
+
+        if (sensor_ok) {
+			int32_t inteira = (int32_t) pressure;
+            int32_t frac    = (int32_t) ((pressure - (float)inteira) * 1000.0f + 0.5f);
+            char bufp[16];
+            snprintf(bufp, sizeof(bufp), "%d.%03d", inteira, frac);
+            ESP_LOGI(TAG, "bufp formatado = '%s'\n", bufp);
+            cJSON_AddStringToObject(root, "sensor_selected_value", bufp);
+        } else {
+            cJSON_AddStringToObject(root, "sensor_selected_value", "[Sem leitura]");
+        }
+    } else {
+        cJSON_AddStringToObject(root, "sensor_selected_value", "[Desativado]");
+    }
+
+    const char *response = cJSON_PrintUnformatted(root);
+    ESP_LOGI(TAG, "++++++>DEBUG JSON GET response: %s", response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+    free((void*)response);
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "--- FIM /configMaintGet ---");
+    return ESP_OK;
+}
+
+//--------------------------------------------------------------------
+// New config operation calibration
+//--------------------------------------------------------------------
+static esp_err_t config_maintenance_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+    int total_len = req->content_len;
+    int cur_len = 0;
+    int received = 0;
+
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive data");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+if (root == NULL) {
+        ESP_LOGE(TAG, "configMaintSave: JSON invÃ¡lido em cJSON_Parse");
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "erro", "JSON inválido");
+        const char *s = cJSON_PrintUnformatted(err);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, s);
+        free((void*)s);
+        cJSON_Delete(err);
+        return ESP_FAIL;
+    }
+        // pega o campo ativar_cali (se nÃ£o existir, assume false)
+    cJSON *item = cJSON_GetObjectItem(root, "ativar_cali");
+    bool enable = (item != NULL && cJSON_IsTrue(item));
+        // atualiza o flag permanente
+    enable_calibration(enable);
+    ESP_LOGI(TAG, "configMaintSave: enable_calibration(%d)", enable);
+    
+    if (enable) {
+    activate_mosfet(enable_analog_sensors);
+     }
+     else{
+		 activate_mosfet(disable_analog_sensors);
+		 }
+   // ===== NOVO PATCH =====
+    // Primeiro, se o JSON tiver o campo "sensor", atualizamos sensor_em_calibracao
+    if (cJSON_HasObjectItem(root, "sensor")) {
+        int sensor_val = cJSON_GetObjectItem(root, "sensor")->valueint;
+        if (sensor_val == 1) {
+            sensor_em_calibracao = analog_1;
+        } else if (sensor_val == 2) {
+            sensor_em_calibracao = analog_2;
+        }
+    }
+    
+if (has_calibration()) {
+    // Verifica se o sensor em calibração está OK
+    float test_value = oneshot_analog_read(sensor_em_calibracao);
+    if (test_value < SENSOR_DISCONNECTED_THRESHOLD) {
+        enable_calibration(false); // Força desativação da calibração
+        ESP_LOGW(TAG, "Tentativa de ativar calibração sem sensor conectado.");
+        // [Opcional] envie erro para o front (veja abaixo)
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "ativar_cali", false);
+        cJSON_AddStringToObject(resp, "erro", "Sensor desconectado");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, cJSON_PrintUnformatted(resp));
+        cJSON_Delete(resp);
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+}
+
+// Se existir campo "sensor", atualiza o sensor selecionado
+/*if (cJSON_HasObjectItem(root, "sensor")) {
+    int sensor_val = cJSON_GetObjectItem(root, "sensor")->valueint;
+    if (sensor_val == 1) {
+        sensor_em_calibracao = analog_1;
+    } else if (sensor_val == 2) {
+        sensor_em_calibracao = analog_2;
+    }
+}
+*/
+// Se existir campo "unit", atualiza a unidade selecionada
+if (cJSON_HasObjectItem(root, "unit")) {
+    const char* unit_str = cJSON_GetObjectItem(root, "unit")->valuestring;
+    if (strcmp(unit_str, "bar") == 0) {
+        unidade_em_calibracao = PRESSURE_UNIT_BAR;
+    } else if (strcmp(unit_str, "psi") == 0) {
+        unidade_em_calibracao = PRESSURE_UNIT_PSI;
+    }
+}
+
+    cJSON *s1_refs = cJSON_GetObjectItem(root, "sensor1_refs");
+    cJSON *s2_refs = cJSON_GetObjectItem(root, "sensor2_refs");
+
+    reference_point_t ref_sensor1[NUM_CAL_POINTS] = {0};
+    reference_point_t ref_sensor2[NUM_CAL_POINTS] = {0};
+
+    // ---------------------------
+    // Sensor 1
+    // ---------------------------
+    if (s1_refs && cJSON_IsObject(s1_refs)) {
+        cJSON *entry = NULL;
+        cJSON_ArrayForEach(entry, s1_refs) {
+            const char *key = entry->string;
+            cJSON *obj = entry;
+
+            if (obj && key) {
+                float ref = atof(key);
+                float raw_val = oneshot_analog_read(analog_1);
+                const char *unit = cJSON_GetObjectItem(obj, "unit")->valuestring;
+                int idx = (int)(ref / 5);
+
+                if (idx >= 0 && idx < NUM_CAL_POINTS) {
+                    ref_sensor1[idx].ref_value = ref;
+                    ref_sensor1[idx].real_value = raw_val;
+                    strncpy(ref_sensor1[idx].unit, unit, sizeof(ref_sensor1[idx].unit));
+
+                    ESP_LOGI(TAG, "[Sensor1] idx %d: ref=%.2f, raw=%.4f, unit=%s", idx, ref, raw_val, unit);
+                }
+            }
+        }
+
+        esp_err_t err = save_reference_points_sensor1(ref_sensor1);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Erro ao salvar dados sensor1 na NVS: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "Dados de calibração sensor1 salvos na NVS");
+        }
+    }
+
+    // ---------------------------
+    // Sensor 2
+    // ---------------------------
+    if (s2_refs && cJSON_IsObject(s2_refs)) {
+        cJSON *entry = NULL;
+        cJSON_ArrayForEach(entry, s2_refs) {
+            const char *key = entry->string;
+            cJSON *obj = entry;
+
+            if (obj && key) {
+                float ref = atof(key);
+                float raw_val = oneshot_analog_read(analog_2);
+                const char *unit = cJSON_GetObjectItem(obj, "unit")->valuestring;
+                int idx = (int)(ref / 5);
+
+                if (idx >= 0 && idx < NUM_CAL_POINTS) {
+                    ref_sensor2[idx].ref_value = ref;
+                    ref_sensor2[idx].real_value = raw_val;
+                    strncpy(ref_sensor2[idx].unit, unit, sizeof(ref_sensor2[idx].unit));
+
+                    ESP_LOGI(TAG, "[Sensor2] idx %d: ref=%.2f, raw=%.4f, unit=%s", idx, ref, raw_val, unit);
+                }
+            }
+        }
+
+        esp_err_t err = save_reference_points_sensor2(ref_sensor2);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Erro ao salvar dados sensor2 na NVS: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "Dados de calibração sensor2 salvos na NVS");
+        }
+    }
+
+    cJSON_Delete(root);
+    httpd_resp_sendstr(req, "{\"status\": \"success\"}");
+    return ESP_OK;
+}
+
+
+static esp_err_t config_operation_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "serial_number", get_serial_number());
+    cJSON_AddStringToObject(root, "company", get_company());
+    cJSON_AddStringToObject(root, "ds_start", get_deep_sleep_start());
+    cJSON_AddStringToObject(root, "ds_end", get_deep_sleep_end());
+    if(has_reset_count())
+    {
+        cJSON_AddTrueToObject(root, "count_reset");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "count_reset");
+    }
+    cJSON_AddStringToObject(root, "keep_alive", get_keep_alive());
+ /*   if(has_log_level_1())
+    {
+        cJSON_AddTrueToObject(root, "log1");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "log1");
+    }
+    if(has_log_level_2())
+    {
+        cJSON_AddTrueToObject(root, "log2");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "log2");
+    }*/
+
+    //--------------------------------------------
+    if(has_enable_post())
+    {
+        cJSON_AddTrueToObject(root, "post_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "post_en");
+    }
+    if(has_enable_get())
+    {
+        cJSON_AddTrueToObject(root, "get_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "get_en");
+    }
+
+    cJSON_AddStringToObject(root, "config_server_url", get_config_server_url());
+    cJSON_AddNumberToObject(root, "config_server_port", get_config_server_port());
+    cJSON_AddStringToObject(root, "config_server_path", get_config_server_path());
+    
+    cJSON_AddNumberToObject(root, "level_min", get_level_min());
+    cJSON_AddNumberToObject(root, "level_max", get_level_max());
+    
+    
+    //**********************
+    time_t t = get_last_data_sent();
+    char buff[20];
+    strftime(buff, 20, "%d/%m/%Y %H:%M:%S", localtime(&t));
+    if (TIME_REFERENCE < get_last_data_sent()) // Serve para não aparecer a data de 1969
+      {
+       cJSON_AddStringToObject(root, "last_comm", buff);
+      }
+
+    cJSON_AddNumberToObject(root, "csq", get_csq());
+
+    //**********************
+/*    float voltage_bat= (float)get_battery();
+    voltage_bat=voltage_bat*0.002;
+    char voltage[5];
+    sprintf (voltage, "%.2f", voltage_bat);
+
+    cJSON_AddStringToObject(root, "battery", voltage);*/
+
+    //**********************
+    const char *config_operation = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, config_operation);
+    free((void *)config_operation);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+//--------------------------------------------------------------------
+
+static esp_err_t rele_activate(httpd_req_t *req)
+{
+    update_last_interaction();
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        ESP_LOGE(TAG, "Falha ao criar objeto JSON");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro interno");
+        return ESP_FAIL;
+    }
+
+    if (req->method == HTTP_GET) {
+        cJSON_AddBoolToObject(root, "active", rele_state);
+        cJSON_AddStringToObject(root, "status", "success");
+    } else if (req->method == HTTP_POST) {
+        int total_len = req->content_len;
+        int cur_len = 0;
+        char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+        int received = 0;
+        if (total_len >= SCRATCH_BUFSIZE) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+            return ESP_FAIL;
+        }
+        while (cur_len < total_len) {
+            received = httpd_req_recv(req, buf + cur_len, total_len);
+            if (received <= 0) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+                return ESP_FAIL;
+            }
+            cur_len += received;
+        }
+        buf[total_len] = '\0';
+
+        cJSON *post_data = cJSON_Parse(buf);
+        if (!post_data) {
+            ESP_LOGE(TAG, "Falha ao parsear JSON");
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "JSON inválido");
+            return ESP_FAIL;
+        }
+
+        cJSON *active_item = cJSON_GetObjectItem(post_data, "active");
+        if (active_item) {
+            rele_state = cJSON_IsTrue(active_item);
+            if (rele_state) {
+                rele_turn_on();
+            } else {
+                rele_turn_off();
+            }
+        }
+        cJSON_Delete(post_data);
+
+        cJSON_AddBoolToObject(root, "active", rele_state);
+        cJSON_AddStringToObject(root, "status", "success");
+    } else {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, "Método não permitido");
+        return ESP_FAIL;
+    }
+
+    const char *response = cJSON_PrintUnformatted(root);
+    if (!response) {
+        ESP_LOGE(TAG, "Falha ao formatar JSON");
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro interno");
+        return ESP_FAIL;
+    }
+    httpd_resp_sendstr(req, response);
+    free((void *)response);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+//-----------------------------------------------
+/*static esp_err_t reboot_device_post_handler(httpd_req_t *req)
+{
+	if (!lte_task_ON)
+	{
+	save_system_config_data_time();
+    esp_restart();
+	}
+	else
+	{
+     printf("Nao pode ser feito o restart enquanto o modem estiver ligado");
+     return 0;
+	}
+
+}
+*/
+// Tarefa para desconectar o AP ou entrar em deep sleep
+static void exit_ap_task(void *pvParameters) {
+
+       esp_wifi_set_mode(WIFI_MODE_STA); // Apenas STA
+       ESP_LOGI(TAG, "AP desconectado temporariamente (STA ativo)");
+       ap_active = false;
+       xTaskCreate(restart_ap_task, "restart_ap_task", 2048, NULL, 5, NULL);
+        
+       vTaskDelete(NULL);
+}
+
+static esp_err_t exit_device_post_handler(httpd_req_t *req) {
+    printf("]]]]]] Passou pelo Exit [[[[[\n");
+    clear_display();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    save_system_config_data_time();
+/*     if(!has_factory_config()||!has_device_active())
+	    {
+         printf(">>>DESLIGADO<<<\n");
+         vTaskDelay(pdMS_TO_TICKS(100));
+	     start_deep_sleep();
+	    }*/
+    
+    // Envia a resposta HTTP e fecha o socket
+    if (has_activate_sta()) {
+        httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGI(TAG, "Resposta enviada, agendando desconexão do AP");
+    } else {
+        httpd_resp_send(req, "Dispositivo entrando em deep sleep", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGI(TAG, "Resposta enviada, agendando deep sleep");
+    }
+    
+    // Força o fechamento da sessão HTTP
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    vTaskDelay(pdMS_TO_TICKS(50)); // Pequeno delay para garantir o fechamento
+    
+    if (has_activate_sta()&&ap_active)
+	   {
+		xTaskCreate(exit_ap_task, "exit_ap_task", 2048, req, 5, NULL);
+       }
+    else{  
+        xTaskCreate(shutdown_task, "shutdown_task", 2048, NULL, 5, NULL);  
+	   }
+	   
+	   if(first_factory_setup&&has_factory_config())
+	   {
+		printf("### RESTART ###\n");
+		save_system_config_data_time();
+		set_inactivity();
+		first_factory_setup=false;
+		esp_restart();  
+	   }
+
+    return ESP_OK;
+  
+}
+
+// Função separada para parar o servidor HTTP (chamada em outro contexto se necessário)
+void stop_http_server(httpd_handle_t server)
+{
+    if (server != NULL) {
+        printf("Parando servidor HTTP em task separada...\n");
+        esp_err_t err = httpd_stop(server);
+        if (err != ESP_OK) {
+            printf("Erro ao parar httpd: %s\n", esp_err_to_name(err));
+        } else {
+            printf("Servidor HTTP parado.\n");
+        }
+    }
+}
+
+static esp_err_t config_login_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    int total_len = req->content_len;
+    int cur_len = 0;
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+    int received = 0;
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if(strcmp(cJSON_GetObjectItem(root, "key")->valuestring, SUPER_USER_KEY) == 0)
+    {
+        super_user_logged = true;
+    }
+    cJSON_Delete(root);
+    if(super_user_logged)
+    {
+        httpd_resp_sendstr(req, "{\"login\":true}");
+    }
+    else
+    {
+        httpd_resp_sendstr(req, "{\"login\":false}");
+    }
+    
+
+    return ESP_OK;
+}
+
+static esp_err_t config_device_get_handler(httpd_req_t *req)
+{
+	time_t system_time = time(&system_time);
+	
+    update_last_interaction();
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        ESP_LOGE(TAG, "Falha ao criar objeto JSON");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro interno");
+        return ESP_FAIL;
+    }
+    cJSON_AddStringToObject(root, "id", get_device_id());
+    cJSON_AddStringToObject(root, "name", get_name());
+    cJSON_AddStringToObject(root, "phone", get_phone());
+    cJSON_AddStringToObject(root, "ssid_ap", get_ssid_ap());
+    cJSON_AddStringToObject(root, "wifi_pw_ap", get_password_ap());
+    if(has_activate_sta())
+    {
+        cJSON_AddTrueToObject(root, "activate_sta");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "activate_sta");
+    }
+    cJSON_AddStringToObject(root, "ssid_sta", get_ssid_sta());
+    cJSON_AddStringToObject(root, "wifi_pw_sta", get_password_sta());
+    
+   // 1) Flags de qual checkbox deve vir marcado
+   cJSON_AddBoolToObject(root, "activate_send_freq_mode", is_send_mode_freq());
+   cJSON_AddBoolToObject(root, "activate_send_time_mode", is_send_mode_time());
+
+   // 2) Sempre envie o campo send_mode
+   cJSON_AddStringToObject(root, "send_mode", get_send_mode());
+
+   // 3) Sempre envie o send_period
+   cJSON_AddNumberToObject(root, "send_period", get_send_period());
+
+   // 4) Sempre envie o array de horários (mesmo que zeros)
+   {
+     int times[4] = {
+       get_send_time1(), get_send_time2(),
+       get_send_time3(), get_send_time4()
+     };
+     cJSON *arr = cJSON_CreateIntArray(times, 4);
+     cJSON_AddItemToObject(root, "send_times", arr);
+   } 
+    
+    
+    
+   // 1) Modo de envio (único campo send_mode)
+/*cJSON_AddStringToObject(root, "send_mode", get_send_mode());               // adiciona "freq" ou "time"
+if (is_send_mode_freq()) {                                               // equivalente a send_mode == "freq"
+    cJSON_AddNumberToObject(root, "send_period", get_send_period());
+}
+else if (is_send_mode_time()) {                                           // equivalente a send_mode == "time"
+    int times[4] = {
+        get_send_time1(),
+        get_send_time2(),
+        get_send_time3(),
+        get_send_time4()
+    };
+    cJSON *arr = cJSON_CreateIntArray(times, 4);
+    cJSON_AddItemToObject(root, "send_times", arr);
+}*/
+
+ //   cJSON_AddNumberToObject(root, "send_period", get_send_period());
+     
+    cJSON_AddNumberToObject(root, "deep_sleep_period", get_deep_sleep_period());
+   
+    if(should_save_pulse_zero())
+    {
+        cJSON_AddTrueToObject(root, "save_pulse_zero");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "save_pulse_zero");
+    }
+    cJSON_AddNumberToObject(root, "scale", get_scale());
+    cJSON_AddNumberToObject(root, "flow_rate", get_flow_rate());
+    
+    if (system_time>TIME_REFERENCE)                                   //Se o tempo de sistema for maior que Janeiro de 2021
+    {
+    cJSON_AddStringToObject(root, "date", get_date());
+    cJSON_AddStringToObject(root, "time", get_time());
+    }
+
+    
+    if(has_factory_config())
+    {
+        cJSON_AddTrueToObject(root, "finished_factory");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "finished_factory");
+    }
+    
+    if(has_device_active())
+    {
+        cJSON_AddTrueToObject(root, "device_active");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "device_active");
+    }
+    
+   
+/*    if(should_send_value())
+    {
+        cJSON_AddTrueToObject(root, "send_value");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "send_value");
+    }*/
+
+ //Modificação por sugestão do Krok3   
+    const char *device_config = cJSON_PrintUnformatted(root);
+        if (!device_config) {
+        ESP_LOGE(TAG, "Falha ao formatar JSON");
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro interno");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+     esp_err_t err = httpd_resp_sendstr(req, device_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao enviar resposta: %s", esp_err_to_name(err));
+        free((void *)device_config);
+        cJSON_Delete(root);
+        return err;
+    }
+    
+    free((void *)device_config);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+//================================================
+static void update_sta_status_task(void *pvParameters) {
+    while (1) {
+        wifi_mode_t mode;
+        wifi_ap_record_t ap_info;
+        esp_err_t err = esp_wifi_get_mode(&mode);
+        if (err == ESP_OK && (mode & WIFI_MODE_STA)) {
+            err = esp_wifi_sta_get_ap_info(&ap_info);
+            if (err == ESP_OK) {
+                sta_connected = true;
+ //               strncpy(sta_ssid, (char *)ap_info.ssid, sizeof(sta_ssid));
+            } else {
+                sta_connected = false;
+                memset(sta_ssid, 0, sizeof(sta_ssid));
+            }
+        } else {
+            sta_connected = false;
+            memset(sta_ssid, 0, sizeof(sta_ssid));
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static esp_err_t status_sta_get_handler(httpd_req_t *req) {
+    printf("Requisição GET em /status_sta recebida\n");
+    char response[128];
+    if (sta_connected) {
+        snprintf(response, sizeof(response), "{\"sta_connected\": true, \"ssid\": \"%s\"}", get_ssid_sta());
+    } else {
+        snprintf(response, sizeof(response), "{\"sta_connected\": false}");
+    }
+    ESP_LOGI(TAG, "Resposta enviada: %s", response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+
+static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
+    char buf[512];
+    int ret;
+
+    printf("Requisição POST em /connect_sta recebida\n");
+    ESP_LOGI(TAG, "Requisição POST em /connect_sta recebida, content_len: %d", req->content_len);
+
+    if (req->content_len > sizeof(buf) - 1) {
+        ESP_LOGE(TAG, "Content-Length excede buffer");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Dados muito grandes");
+        return ESP_FAIL;
+    }
+
+    ret = httpd_req_recv(req, buf, req->content_len);
+    if (ret <= 0) {
+        ESP_LOGE(TAG, "Erro ao receber dados");
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    ESP_LOGI(TAG, "Dados recebidos: %s", buf);
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        ESP_LOGE(TAG, "Erro ao parsear JSON");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "JSON inválido");
+        return ESP_FAIL;
+    }
+
+    cJSON *disconnect = cJSON_GetObjectItem(root, "disconnect");
+    if (disconnect && cJSON_IsTrue(disconnect)) {
+        ESP_LOGI(TAG, "Desconectando STA...");
+        sta_intentional_disconnect = true;
+        set_activate_sta(false); // Atualiza dev_config e NVS
+        esp_err_t err = esp_wifi_disconnect();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Erro ao desconectar STA: %s", esp_err_to_name(err));
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro ao desconectar Wi-Fi");
+            cJSON_Delete(root);
+            return ESP_FAIL;
+        }
+        httpd_resp_send(req, "{\"status\": \"Desconectado\"}", HTTPD_RESP_USE_STRLEN);
+    } else {
+        cJSON *ssid_json = cJSON_GetObjectItem(root, "ssid");
+        cJSON *pass_json = cJSON_GetObjectItem(root, "password");
+        if (!ssid_json || !pass_json || !cJSON_IsString(ssid_json) || !cJSON_IsString(pass_json)) {
+            ESP_LOGE(TAG, "Campos SSID ou password ausentes/inválidos");
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Dados inválidos");
+            return ESP_FAIL;
+        }
+
+//        strncpy(sta_ssid, ssid_json->valuestring, sizeof(sta_ssid) - 1);
+//        strncpy(sta_password, pass_json->valuestring, sizeof(sta_password) - 1);
+        set_ssid_sta(ssid_json->valuestring); // Grava em dev_config
+        set_password_sta(pass_json->valuestring); // Grava em dev_config
+         ESP_LOGI(TAG, "Recebido SSID: '%s'", get_ssid_sta());
+
+        wifi_config_t wifi_config = {
+            .sta = {
+                .ssid = {0},
+                .password = {0},
+                .scan_method = WIFI_ALL_CHANNEL_SCAN,
+                .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
+            },
+        };
+ //       strncpy((char *)wifi_config.sta.ssid, sta_ssid, sizeof(wifi_config.sta.ssid) - 1);
+//        strncpy((char *)wifi_config.sta.password, sta_password, sizeof(wifi_config.sta.password) - 1);
+        strncpy((char *)wifi_config.sta.ssid, get_ssid_sta(), sizeof(wifi_config.sta.ssid) - 1);
+        strncpy((char *)wifi_config.sta.password, get_password_sta(), sizeof(wifi_config.sta.password) - 1);
+
+        esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Erro ao configurar STA: %s", esp_err_to_name(err));
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro ao configurar Wi-Fi");
+            cJSON_Delete(root);
+            return ESP_FAIL;
+        }
+
+        ESP_LOGI(TAG, "Configuração STA aplicada, tentando conectar...");
+        set_activate_sta(true); // Atualiza dev_config e NVS
+        sta_intentional_disconnect = false;
+        err = esp_wifi_connect();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Erro ao conectar STA: %s", esp_err_to_name(err));
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Erro ao conectar Wi-Fi");
+            cJSON_Delete(root);
+            return ESP_FAIL;
+        }
+        httpd_resp_send(req, "{\"status\": \"Tentando conectar\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// Tarefa para reativar o AP
+static void restart_ap_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(10000)); // 5 segundos
+    esp_wifi_set_mode(WIFI_MODE_APSTA); // Volta para AP+STA
+    ESP_LOGI(TAG, "AP reativado após 5 segundos");
+    ap_active = true;
+    vTaskDelete(NULL);
+}
+
+//================================================
+static esp_err_t config_network_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    int total_len = req->content_len;
+    int cur_len = 0;
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+    int received = 0;
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "content too long");
+        return ESP_FAIL;
+    }
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    ESP_LOGI(TAG, "Network: %s", buf);
+    set_apn(cJSON_GetObjectItem(root, "apn")->valuestring);
+    set_lte_user(cJSON_GetObjectItem(root, "lte_user")->valuestring);
+    set_lte_pw(cJSON_GetObjectItem(root, "lte_pw")->valuestring);
+    enable_network_http(cJSON_IsTrue(cJSON_GetObjectItem(root, "http_enable")));
+    set_data_server_url(cJSON_GetObjectItem(root, "data_server_url")->valuestring);
+    set_data_server_port(cJSON_GetObjectItem(root, "data_server_port")->valueint);
+    set_data_server_path(cJSON_GetObjectItem(root, "data_server_path")->valuestring);
+    set_network_user(cJSON_GetObjectItem(root, "user")->valuestring);
+    set_network_token(cJSON_GetObjectItem(root, "token")->valuestring);
+    set_network_pw(cJSON_GetObjectItem(root, "pw")->valuestring);
+    enable_network_user(cJSON_IsTrue(cJSON_GetObjectItem(root, "user_en")));
+    enable_network_token(cJSON_IsTrue(cJSON_GetObjectItem(root, "token_en")));
+    enable_network_pw(cJSON_IsTrue(cJSON_GetObjectItem(root, "pw_en")));
+    enable_network_mqtt(cJSON_IsTrue(cJSON_GetObjectItem(root, "mqtt_enable")));
+    set_mqtt_url(cJSON_GetObjectItem(root, "mqtt_url")->valuestring);
+    set_mqtt_port(cJSON_GetObjectItem(root, "mqtt_port")->valueint);
+    set_mqtt_topic(cJSON_GetObjectItem(root, "mqtt_topic")->valuestring);
+    
+    cJSON_Delete(root);
+    httpd_resp_sendstr(req, "Post control value successfully");
+    save_config();
+    return ESP_OK;
+}
+
+static esp_err_t config_network_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "apn", get_apn());
+    cJSON_AddStringToObject(root, "lte_user", get_lte_user());
+    cJSON_AddStringToObject(root, "lte_pw", get_lte_pw());  
+    cJSON_AddStringToObject(root, "data_server_url", get_data_server_url());
+    cJSON_AddNumberToObject(root, "data_server_port", get_data_server_port());
+    cJSON_AddStringToObject(root, "data_server_path", get_data_server_path());
+    cJSON_AddStringToObject(root, "mqtt_topic", get_mqtt_topic());
+    cJSON_AddStringToObject(root, "user", get_network_user());
+    cJSON_AddStringToObject(root, "token", get_network_token());
+    cJSON_AddStringToObject(root, "pw", get_network_pw());
+    cJSON_AddStringToObject(root, "mqtt_url", get_mqtt_url());
+    cJSON_AddNumberToObject(root, "mqtt_port", get_mqtt_port());
+    cJSON_AddStringToObject(root, "mqtt_topic", get_mqtt_topic());
+    
+    if(has_network_http_enabled())
+    {
+        cJSON_AddTrueToObject(root, "http_enable");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "http_enable");
+     }
+     
+    if(has_network_token_enabled())
+    {
+        cJSON_AddTrueToObject(root, "token_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "token_en");
+    }
+
+    if(has_network_user_enabled())
+    {
+        cJSON_AddTrueToObject(root, "user_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "user_en");
+    }
+
+    if(has_network_pw_enabled())
+    {
+        cJSON_AddTrueToObject(root, "pw_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "pw_en");
+    }
+    
+    if(has_network_mqtt_enabled())
+    {
+        cJSON_AddTrueToObject(root, "mqtt_enable");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "mqtt_enable");
+     }
+
+    const char *network_config = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, network_config);
+    free((void *)network_config);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t load_registers_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    char*  buf;
+    size_t buf_len;
+    uint32_t value = 0;
+    char file_chunk[256];
+
+    buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        buf = malloc(buf_len);
+        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+            ESP_LOGD(TAG, "Found URL query => %s", buf);
+            char param[32];
+
+            if (httpd_query_key_value(buf, "last_byte", param, sizeof(param)) == ESP_OK) {
+                value = atoi(param);
+                ESP_LOGD(TAG, "Found URL query parameter => last_byte=%d", value);
+            }
+        }
+        free(buf);
+    }
+
+    bool end = read_record_file_sd(&value, file_chunk);
+    file_chunk[255] = '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "chunk", file_chunk);
+    cJSON_AddNumberToObject(root, "last_byte", value);
+    if(end)
+    {
+        cJSON_AddTrueToObject(root, "end");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "end");
+    }
+
+    const char *response = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, response);
+    free((void *)response);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t delete_registers_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+   if(delete_record_sd()==ESP_OK)
+     {
+	  printf ("File is Deleted\n");
+      return ESP_OK;	 
+	 }
+   else{
+		return ESP_FAIL;
+        }
+}
+//----------------------------------------------------------
+// Handler para o endpoint /ping
+static esp_err_t ping_handler(httpd_req_t *req)
+{
+    ESP_LOGI("PING", "Recebido /ping do front");
+
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        if ((mode & WIFI_MODE_AP) == 0 && !user_initiated_exit) {
+            ESP_LOGW("PING", "SoftAP caiu! Religando imediatamente...");
+            ap_restart_cb(NULL);
+        }
+    } else {
+        ESP_LOGE("PING", "Falha em esp_wifi_get_mode()");
+    }
+
+    httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+//----------------------------------------------------------
+
+static void shutdown_task(void* pvParameters) {
+
+    user_initiated_exit = true;
+            // Stop Factory server
+    stop_factory_server();
+    printf("Servidor HTTP parado.\n");
+            
+            // Stop WiFi
+    stop_wifi_ap_sta();
+    printf("WiFi parado.\n");
+            
+    wifi_ap_record_t ap_info;
+    esp_err_t sta_status = esp_wifi_sta_get_ap_info(&ap_info);
+    printf("STA STATUS=====>%i\n", sta_status);
+
+    if (sta_status == ESP_OK) {
+        printf("STA conectado ao SSID: %s. Mantendo WiFi ativo.\n", ap_info.ssid);
+
+    } else {
+        printf("STA nao conectado. Desativando WiFi\n");
+ 
+        vTaskDelay(pdMS_TO_TICKS(100)); // Tempo para envio
+      }
+                      
+        vTaskDelay(pdMS_TO_TICKS(300));
+        server_shutdown_requested=true;
+        vTaskDelete(NULL);
+    
+}
+
+//-------------------------------------------------------------------
+//      Factory Configuration Task
+//-------------------------------------------------------------------
+void Factory_Config_Task(void* pvParameters)
+{
+	bool factory_task_ON = true;
+ 	Send_FactoryControl_Task_ON= true;
+    xQueueSend(xQueue_Factory_Control, &Send_FactoryControl_Task_ON,/*timeout=*/0);
+
+	start_factory_routine();
+
+	        // Inicializar last_interaction_ticks no boot
+    last_interaction_ticks = xTaskGetTickCount();
+	        
+ while(1)
+	  {
+        TickType_t now_ticks = xTaskGetTickCount();
+        TickType_t last_interaction = get_factory_routine_last_interaction();                 
+        TickType_t tick_diff = (now_ticks >= last_interaction) ? (now_ticks - last_interaction) : 0;
+        
+//        ESP_LOGI(TAG, "Factory Last Interaction ====> %u ms", tick_diff * portTICK_PERIOD_MS);     
+//--------------------------------------------------------------------------
+//Somente para garantir que não entre no deep sleep antes do momento certo
+//--------------------------------------------------------------------------
+               if(save_button_action)
+                 {
+                  last_interaction_ticks = xTaskGetTickCount();
+			      save_button_action=false;
+				  ESP_LOGI(TAG, "Save button action reset last_interaction_ticks to %u", last_interaction_ticks);
+				  }
+//--------------------------------------------------------------------------
+
+               if ((tick_diff >= pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000)) && 
+            Send_FactoryControl_Task_ON && !has_activate_sta())
+	                      {
+							user_initiated_exit = true; 
+	                        save_system_config_data_time();
+	                        printf(">>>!!!Go to Deep Sleep!!!<<<\n");
+                             xTaskCreate(shutdown_task, "shutdown_task", 2048, NULL, 5, NULL);
+                                   
+                            }
+                                          
+       if (server_shutdown_requested) {
+		   printf("xQueue_Factory_Control -->>>>send\n");
+            Send_FactoryControl_Task_ON= false;
+            // Stop HTTP server
+            server_shutdown_requested=false;
+
+	           factory_task_ON=false;
+	           
+	        if(!has_factory_config()||!has_device_active()){
+				
+				start_deep_sleep();
+			}
+      
+            // Reset flag after attempting deep sleep (though this line won't be reached normally)
+            
+        }
+   BaseType_t result = xQueueSend(xQueue_Factory_Control, (void*)&Send_FactoryControl_Task_ON , (TickType_t)30 );
+
+        if (!factory_task_ON&&result == pdPASS)
+           {
+			vTaskDelay(pdMS_TO_TICKS(500));  
+			printf(">>>Deinit Factory<<<\n");
+			deinit_factory_task();
+		   }
+
+	        if(has_activate_sta()&&!sta_status_task)
+	        {
+			 sta_status_task = true;	
+	         xTaskCreate(update_sta_status_task, "StaStatusTask", 4096, NULL, 5, NULL);
+	        }
+	        	        
+vTaskDelay(pdMS_TO_TICKS(1000));  
+		   	          
+	    }//while final
+}
+
+void init_factory_task(void)
+{
+	start_wifi_ap_sta();
+
+	if (Factory_Config_TaskHandle == NULL)
+	   {
+        xTaskCreate( Factory_Config_Task, "Factory_Config_Task", 15000, NULL, 2, &Factory_Config_TaskHandle);
+       }
+}
+
+void deinit_factory_task(void)
+{
+  vTaskDelete(Factory_Config_TaskHandle);
+  Factory_Config_TaskHandle = NULL;  
+  printf("!!!Factor Finished!!!\n");	
+}
+
+
