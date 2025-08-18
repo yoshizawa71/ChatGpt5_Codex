@@ -22,6 +22,8 @@ typedef struct {
 #define PCNT_THRESH0_VAL    -1
 #define PCNT_INPUT_PIN  36 // Pulse Input GPIO
 
+#define RS485_MAX_SENSORS 10
+
 void init_pcnt(void);
 int16_t get_pulse_count(void);
 void reset_pulse_count(void);
@@ -49,16 +51,15 @@ void turn_off_modem(void);
 void pwr_ctrl(void);
 
 //WIFI AP FUNCTIONS
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
+/*#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
 void ap_restart_cb(void* arg);
 esp_err_t start_wifi_ap(void);
 esp_err_t start_wifi_ap_sta(void);
 //void stop_wifi_ap(void);
-void stop_wifi_ap_sta(void);
+void stop_wifi_ap_sta(void);*/
 void get_mac_address(char* baseMacChr);
 
-extern volatile bool sta_connected; // Estado atual da conexão STA
-extern volatile bool sta_intentional_disconnect; // Flag de desconexão intencional
+
 
 
 //void Wakeup_Pulse_Task(void* pvParameters);
@@ -166,15 +167,20 @@ struct record_index_config {
     uint32_t    cursor_position;
 };
 
-/*struct record_sensors_config {
-    uint32_t    last_write_idx;
-    uint32_t    last_read_idx;
-    uint32_t    total;
-    uint32_t    last_pulse_count;
-    float       last_pressure1;
-    float       last_pressure2;
-};*/
+//-------------------------------------
+//  RS485
+//-------------------------------------
 
+typedef struct {
+    uint8_t  channel;           // 3…13
+    uint8_t  address;           // 1…247
+    char     type[16];          // "energia", "temperatura", ...
+    char     subtype[16];       // "monofasico"/"trifasico" ou ""
+} sensor_map_t;
+
+// protótipos
+esp_err_t save_rs485_config(const sensor_map_t *map, size_t count);
+esp_err_t load_rs485_config(sensor_map_t *map, size_t *count);
 
 struct system_config {
 //    uint32_t gsm_network_error_count;
@@ -252,16 +258,6 @@ void get_pressure_data_set(struct pressure_dataset *config);*/
 #define UNSPECIFIC_RECORD 0x7FFFFFFFU
 
 
-/*
-void mount_sd_card(void);
-void unmount_sd_card(void);
-
-
-bool has_SD_FILE_Deleted(void);
-
-
-bool read_record_file(uint32_t* byte_to_read, char* str);
-*/
 
 
 //SERVER COMMUNICATION
@@ -281,17 +277,7 @@ void server_comm_init(void);
 /**
  * @brief   HTTP Client events id
  */
-/*typedef enum {
-    HTTP_EVENT_ERROR = 0,       !< This event occurs when there are any errors during execution
-    HTTP_EVENT_ON_CONNECTED,    !< Once the HTTP has been connected to the server, no data exchange has been performed
-    HTTP_EVENT_HEADERS_SENT,     !< After sending all the headers to the server
-    HTTP_EVENT_HEADER_SENT = HTTP_EVENT_HEADERS_SENT, !< This header has been kept for backward compatability
-                                                           and will be deprecated in future versions esp-idf
-    HTTP_EVENT_ON_HEADER,       !< Occurs when receiving each header sent from the server
-    HTTP_EVENT_ON_DATA,         !< Occurs when receiving data from the server, possibly multiple portions of the packet
-    HTTP_EVENT_ON_FINISH,       !< Occurs when finish a HTTP session
-    HTTP_EVENT_DISCONNECTED,    !< The connection has been disconnected
-} esp_http_client_event_id_t;*/
+
 
 //Little FS functions
 

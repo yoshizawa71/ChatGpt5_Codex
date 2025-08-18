@@ -25,10 +25,10 @@ set(CMAKE_EXE_LINKER_FLAGS
 set(EXTRA_COMPONENT_DIRS "")
 list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/components/ssd1306
-    ${CMAKE_SOURCE_DIR}/communications
-    ${CMAKE_SOURCE_DIR}/communications/4G
-    ${CMAKE_SOURCE_DIR}/communications/RS485
-    ${CMAKE_SOURCE_DIR}/communications/WIFI
+    ${CMAKE_SOURCE_DIR}/communications/access_network/4G
+    ${CMAKE_SOURCE_DIR}/communications/access_network/RS485
+    ${CMAKE_SOURCE_DIR}/communications/access_network/WIFI
+    ${CMAKE_SOURCE_DIR}/communications/services/tcp_log_console
     ${CMAKE_SOURCE_DIR}/datalogger/datalogger-control
     ${CMAKE_SOURCE_DIR}/datalogger/datalogger-driver
     ${CMAKE_SOURCE_DIR}/libs/esp_littlefs
@@ -39,6 +39,7 @@ list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/peripherals/energy
     ${CMAKE_SOURCE_DIR}/peripherals/pressure
     ${CMAKE_SOURCE_DIR}/peripherals/rele
+    ${CMAKE_SOURCE_DIR}/peripherals/termohigrometro 
     ${CMAKE_SOURCE_DIR}/system
 
 )

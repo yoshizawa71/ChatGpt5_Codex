@@ -35,6 +35,8 @@ static SemaphoreHandle_t file_mutex;
 #define ENERGY_INDEX_CONTROL "/littlefs/energy_index_control.json"
 #define ENERGY_MEASURED "/littlefs/energy_measured.json"
 
+#define RS485_MAP_PATH   "/littlefs/rs485_map.bin"
+
 bool has_device_config(void)
 {
     struct stat st;
@@ -1464,6 +1466,72 @@ if (f == NULL) {
 
     cJSON_Delete(root);
     xSemaphoreGive(file_mutex);
+    return ESP_OK;
+}
+
+esp_err_t save_rs485_config(const sensor_map_t *map, size_t count) {
+    if (count > RS485_MAX_SENSORS) {
+        ESP_LOGE(TAG, "Too many RS-485 sensors: %u (max %d)", (unsigned)count, RS485_MAX_SENSORS);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    // valida duplicidade
+for (size_t i = 0; i < count; i++) {
+    for (size_t j = i + 1; j < count; j++) {
+        if (map[i].channel == map[j].channel && map[i].address == map[j].address) {
+            ESP_LOGE(TAG, "Duplicado (canal=%d, addr=%d)", map[i].channel, map[i].address);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+}
+    if (xSemaphoreTake(file_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    FILE *f = fopen(RS485_MAP_PATH, "wb");
+    if (!f) {
+        ESP_LOGE(TAG, "Não foi possível abrir %s para escrita", RS485_MAP_PATH);
+        xSemaphoreGive(file_mutex);
+        return ESP_FAIL;
+    }
+    uint8_t cnt8 = (uint8_t)count;
+    if (fwrite(&cnt8, 1, 1, f) != 1 ||
+        fwrite(map, sizeof(sensor_map_t), count, f) != count) {
+        ESP_LOGE(TAG, "Falha na escrita de RS-485 config");
+        fclose(f);
+        xSemaphoreGive(file_mutex);
+        return ESP_FAIL;
+    }
+    fclose(f);
+    xSemaphoreGive(file_mutex);
+    ESP_LOGI(TAG, "RS-485 config salvo (%u sensores)", (unsigned)count);
+    return ESP_OK;
+}
+
+esp_err_t load_rs485_config(sensor_map_t *map, size_t *count) {
+    if (xSemaphoreTake(file_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    FILE *f = fopen(RS485_MAP_PATH, "rb");
+    if (!f) {
+        // arquivo pode não existir na primeira vez
+        *count = 0;
+        xSemaphoreGive(file_mutex);
+        return ESP_OK;
+    }
+    uint8_t cnt8 = 0;
+    if (fread(&cnt8, 1, 1, f) != 1 || cnt8 > RS485_MAX_SENSORS) {
+        fclose(f);
+        xSemaphoreGive(file_mutex);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    *count = cnt8;
+    if (fread(map, sizeof(sensor_map_t), *count, f) != *count) {
+        fclose(f);
+        xSemaphoreGive(file_mutex);
+        return ESP_FAIL;
+    }
+    fclose(f);
+    xSemaphoreGive(file_mutex);
+    ESP_LOGI(TAG, "RS-485 config carregado (%u sensores)", (unsigned)*count);
     return ESP_OK;
 }
 

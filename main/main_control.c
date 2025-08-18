@@ -32,6 +32,9 @@
 #include "sleep_control.h"
 #include "led_blink_control.h"
 
+#include "tcp_log_server.h"
+
+
 xTaskHandle TimeManager_TaskHandle = NULL;
 
 static const char *TAG = "Main_Control";
@@ -63,6 +66,7 @@ bool Receive_NetConnect_Task_ON=false;
 bool Receive_FactoryControl_Task_ON = false;
 bool Receive_Get_Network_Time_Task_ON = false;
 bool Send_Response_Factory_Control=false;
+static bool console_tcp_start = false;
 //----------------------------------------
 
 void TimeManager_Task(void* pvParameters);
@@ -92,6 +96,19 @@ static void force_ap_down_task(void *arg)
 
 //------------------------------------
 
+
+
+// Opcional: se você tem um httpd rodando, registra GET /logs para visualizar
+// o ring buffer de logs no navegador (http://<ip>/logs)
+static void console_tcp_register_http_logs(void *httpd_handle)
+{
+    if (httpd_handle) {
+        ESP_ERROR_CHECK( tcp_log_register_http_endpoint(httpd_handle, "/__logs") );
+        ESP_LOGI("CONSOLE", "HTTP /logs endpoint enabled");
+    }
+}
+
+//----------------------------------------
 static void save_last_processed_minute(int minute)
 {
     nvs_handle_t handle;
@@ -288,7 +305,7 @@ uint8_t counter=0;
  if ((ulp_inactivity & UINT16_MAX) == 1)
 	 {
 		 activate_mosfet(enable_sara);
-		 //cell_get_local_time();
+		 cell_get_local_time();
 	 }
 	 
 //Somente para teste
@@ -302,6 +319,7 @@ uint8_t counter=0;
         NULL                   // handle (unused)
     );*/
 //=====================================	 
+
 while(1)
 {
 /*float vbat = battery_monitor_get_voltage();          // bateria em volts
@@ -313,6 +331,15 @@ ESP_LOGI(TAG, "Bateria: %.2fV (%u%%, soc=%.2f), Fonte: %.2fV",
          vbat, (unsigned)batt_pct, soc, vsource);*/
        
 	vTaskDelay(pdMS_TO_TICKS(1000));
+	
+/*	printf("AP Active = %d e modbus start = %d\n", ap_active, console_tcp_start);
+	if (ap_active && !console_tcp_start)
+	{
+		printf(">>>>START CONSOLE TCP<<<<\n");
+        console_tcp_enable(3333);
+        ESP_LOGI("SELFTEST", "Hello TCP! tick=%u", (unsigned)esp_log_timestamp());
+		console_tcp_start = true;
+	}*/
 	
 //----------------------------------------------------------
 //Show Display

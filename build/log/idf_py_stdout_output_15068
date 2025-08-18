@@ -1,0 +1,110 @@
+[1/17] Performing build step for 'ulp_datalogger-control'
+ninja: no work to do.
+[2/7] cmd.exe /C "cd /D C:\ESP_IA\WorkSpace_Test\smart_iot_platform\build\esp-idf\main && C:\ESP_IA\WorkSpace_Test\smart_iot_platform\build\littlefs_py_venv\Scripts\littlefs-python.exe create C:/ESP_IA/WorkSpace_Test/smart_iot_platform/esp_web_server C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp_web_server.bin -v --fs-size=0x80000 --name-max=32 --block-size=4096"
+LittleFS Configuration:
+  Block Size:       4096  /  0x1000
+  Image Size:     524288  /  0x80000
+  Block Count:       128
+  Name Max:           32
+  Image:       C:\ESP_IA\WorkSpace_Test\smart_iot_platform\build\esp_web_server.bin
+Adding File:      ConfigDevice.html
+Adding File:      ConfigNetwork.html
+Adding File:      ConfigOperation.html
+Adding File:      ConfigOperationLogin.html
+Adding File:      configRS485.css
+Adding File:      Exit.html
+Adding File:      favicon.ico
+Adding File:      Home.css
+Adding File:      Home.html
+Adding File:      Maintenance.css
+Adding File:      Maintenance.html
+Adding File:      RegisterView.html
+Adding Directory: scripts
+Adding File:      Style.css
+Adding File:      scripts\configAdminLogin.js
+Adding File:      scripts\configDevice.js
+Adding File:      scripts\configHome.js
+Adding File:      scripts\configNetwork.js
+Adding File:      scripts\configOperation.js
+Adding File:      scripts\configRS485.js
+Adding File:      scripts\connection_monitor.js
+Adding File:      scripts\exit.js
+Adding File:      scripts\home.js
+Adding File:      scripts\jquery-3.6.0.min.js
+Adding File:      scripts\jquery.mask.js
+Adding File:      scripts\loadRegister.js
+Adding File:      scripts\maintenance.js
+Adding File:      scripts\reboot.js
+Adding File:      scripts\show_hide_psw.js
+Adding File:      scripts\wifi_control.js
+[3/7] cmd.exe /C "cd /D C:\ESP_IA\WorkSpace_Test\smart_iot_platform\build\esp-idf\esptool_py && C:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.3.1/components/partition_table/check_sizes.py --offset 0x10000 partition --type app C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/partition_table/partition-table.bin C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/smart_iot_platform.bin"
+smart_iot_platform.bin binary size 0x13e080 bytes. Smallest app partition is 0x200000 bytes. 0xc1f80 bytes (38%) free.
+[4/7] Performing build step for 'bootloader'
+[1/1] cmd.exe /C "cd /D C:\ESP_IA\WorkSpace_Test\smart_iot_platform\build\bootloader\esp-idf\esptool_py && C:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.3.1/components/partition_table/check_sizes.py --offset 0x10000 bootloader 0x1000 C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/bootloader/bootloader.bin"
+Bootloader binary size 0x6f50 bytes. 0x80b0 bytes (54%) free.
+[4/5] cmd.exe /C "cd /D C:\Espressif\frameworks\esp-idf-v5.3.1\components\esptool_py && C:\Espressif\tools\cmake\3.24.0\bin\cmake.exe -D IDF_PATH=C:/Espressif/frameworks/esp-idf-v5.3.1 -D SERIAL_TOesptool.py --chip esp32 -p COM4 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB 0x1000 bootloader/bootloader.bin 0x20000 smart_iot_platform.bin 0x10000 partition_table/partition-table.bin 0x17000 ota_data_initial.bin 0x620000 esp_web_server.bin
+esptool.py v4.8.1
+Serial port COM4
+Connecting.....
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: ac:15:18:a1:9c:90
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00007fff...
+Flash will be erased from 0x00020000 to 0x0015efff...
+Flash will be erased from 0x00010000 to 0x00010fff...
+Flash will be erased from 0x00017000 to 0x00018fff...
+Flash will be erased from 0x00620000 to 0x0069ffff...
+SHA digest in image updated
+Compressed 28496 bytes to 17342...
+Writing at 0x00001000... (50 %)
+Writing at 0x00007a57... (100 %)
+Wrote 28496 bytes (17342 compressed) at 0x00001000 in 0.8 seconds (effective 303.6 kbit/s)...
+Hash of data verified.
+Compressed 1302656 bytes to 853777...
+Writing at 0x00020000... (1 %)
+Writing at 0x0002d19e... (3 %)
+Writing at 0x0003ab81... (5 %)
+Writing at 0x00045ef9... (7 %)
+Writing at 0x0004c373... (9 %)
+Writing at 0x0005153a... (11 %)
+Writing at 0x0005d5c4... (13 %)
+Writing at 0x00063b67... (15 %)
+Writing at 0x00068e81... (16 %)
+Writing at 0x0006e2ec... (18 %)
+Writing at 0x00073936... (20 %)
+Writing at 0x000790d0... (22 %)
+Traceback (most recent call last):
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\__init__.py", line 1314, in _main
+    main()
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\__init__.py", line 1036, in main
+    operation_func(esp, args)
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\cmds.py", line 646, in write_flash
+    esp.flash_defl_block(block, seq, timeout=timeout)
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\loader.py", line 127, in inner
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\loader.py", line 1132, in flash_defl_block
+    self.check_command(
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\loader.py", line 510, in check_command
+    val, data = self.command(op, data, chk, timeout=timeout)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\loader.py", line 479, in command
+    p = self.read()
+        ^^^^^^^^^^^
+  File "C:\Espressif\python_env\idf5.3_py3.11_env\Lib\site-packages\esptool\loader.py", line 412, in read
+    return next(self._slip_reader)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+StopIteration
+
+A fatal error occurred: The chip stopped responding.
+OL=C:/Espressif/python_env/idf5.3_py3.11_env/Scripts/python.exe;;C:/Espressif/frameworks/esp-idf-v5.3.1/components/esptool_py/esptool/esptool.py;--chip;esp32 -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;write_flash;@flash_args -D WORKING_DIRECTORY=C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build -P C:/Espressif/frameworks/esp-idf-v5.3.1/components/esptool_py/run_serial_tool.cmake"
+FAILED: CMakeFiles/flash C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/CMakeFiles/flash 
+cmd.exe /C "cd /D C:\Espressif\frameworks\esp-idf-v5.3.1\components\esptool_py && C:\Espressif\tools\cmake\3.24.0\bin\cmake.exe -D IDF_PATH=C:/Espressif/frameworks/esp-idf-v5.3.1 -D SERIAL_TOOL=C:/Espressif/python_env/idf5.3_py3.11_env/Scripts/python.exe;;C:/Espressif/frameworks/esp-idf-v5.3.1/components/esptool_py/esptool/esptool.py;--chip;esp32 -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;write_flash;@flash_args -D WORKING_DIRECTORY=C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build -P C:/Espressif/frameworks/esp-idf-v5.3.1/components/esptool_py/run_serial_tool.cmake"
+ninja: build stopped: subcommand failed.

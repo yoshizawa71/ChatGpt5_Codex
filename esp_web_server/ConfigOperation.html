@@ -4,6 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Configurações do Admin</title>
   <link href="Style.css" rel="stylesheet">
+  <link rel="stylesheet" href="configRS485.css">
 
 </head>
 
@@ -21,75 +22,135 @@
   <h3>
   <table>
     <tr>
-      <th colspan="3" class="msg">Configuração de Operação</th>
+      <th colspan="4" class="msg">Configuração de Operação</th>
     </tr>
 	
 	  <tr>
       <th rowspan="1">Número de série</th>
-      <td colspan="2"> <input type="text" id="serial_number" name="serial_number" value="" size="25" maxlength="29"></td>
+      <td colspan="3"> <input type="text" id="serial_number" name="serial_number" value="" size="25" maxlength="29"></td>
     </tr>
 	
 	 <tr>
       <th rowspan="1">Empresa</th>
-      <td colspan="2"> <input type="text" id="company" name="company" value="" size="25" maxlength="30"></td>
+      <td colspan="3"> <input type="text" id="company" name="company" value="" size="25" maxlength="30"></td>
     </tr>
 
     <tr>
       <th rowspan="1">Período em sono profundo</th>
       <td > Início: <input type="text" id="ds_start" name="ds_start" value="" size="25" maxlength="8"></td>
-      <td > Fim: <input type="text" id="ds_end" name="ds_end" value="" size="25" maxlength="8"></td>
+      <td colspan="3"> Fim: <input type="text" id="ds_end" name="ds_end" value="" size="25" maxlength="8"></td>
     </tr>
 
     <tr>
       <th rowspan="1">Reinicialização diária do contador</th>
-      <td colspan="2"> <input type="checkbox" id="count_reset" name="count_reset">
+      <td colspan="3"> <input type="checkbox" id="count_reset" name="count_reset">
         <label for="count_reset">Ativado</label></td>
     </tr>
 
     <tr>
       <th rowspan="1">Sinal Keep Alive</th>
-      <td colspan="2"> <input type="text" id="keep_alive" name="keep_alive" value="" size="25" maxlength="8"></td>
-    </tr>
-
- 
-    <tr>
-      <th rowspan="1">Método de Envio HTTP</th>
-      <td > <input type="checkbox" id="post_en" name="post_en"> <label for="post_en">POST</label></td>
-      <td > <input type="checkbox" id="get_en" name="get_en"> <label for="get_en">GET</label></td>
+      <td colspan="3"> <input type="text" id="keep_alive" name="keep_alive" value="" size="25" maxlength="8"></td>
     </tr>
 
     <tr>
     <th rowspan="3">Servidor de Configuração</th>
-	 <td colspan="2">URL: <input type="text" id="config_server_url" name="config_server_url" value="" size="50" maxlength="49"></td>
+	 <td colspan="3">URL: <input type="text" id="config_server_url" name="config_server_url" value="" size="50" maxlength="49"></td>
 	</tr>
 	
 	 <tr>
-	 <td colspan="2">Porta:<input type="text" id="config_server_port" name="config_server_port" value="" size="25" maxlength="29"></td>
+	 <td colspan="3">Porta:<input type="text" id="config_server_port" name="config_server_port" value="" size="25" maxlength="29"></td>
 	</tr>
 
     <tr>
-	 <td colspan="2">Caminho:<input type="text" id="config_server_path" name="config_server_path" value="" size="25" maxlength="29"></td>
+	 <td colspan="3">Caminho:<input type="text" id="config_server_path" name="config_server_path" value="" size="25" maxlength="29"></td>
 	</tr>
 	
 		<tr>
     <th rowspan="1">Acionamento automático do Rele para bombas</th>
       <td > Nível mínimo <input type="text" id="level_min" name="level_min" value="" size="20" maxlength="8"></td>
-      <td > Nível máximo <input type="text" id="level_max" name="level_max" value="" size="20" maxlength="8"></td>
+      <td colspan="3"> Nível máximo <input type="text" id="level_max" name="level_max" value="" size="20" maxlength="8"></td>
 
     </tr>
 	
+ <!-- ====== MAPA DINÂMICO DE RS-485 ====== -->
+<tr><th colspan="4" class="msg">Mapeamento de Sensores RS-485</th></tr>
+<tr>
+  <th>Canal</th>
+  <th>Endereço Modbus</th>
+  <th>Tipo de Sensor</th>
+  <th>Subtipo</th>
+</tr>
+<!-- ÚNICA LINHA DE ENTRADA -->
+<tr>
+  <td>
+    <select id="channel_input" class="channel-dropdown">
+      <option value="">Selecione…</option>
+      <!-- opções 3–13 -->
+      <option value="3">3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+      <option value="7">7</option>
+      <option value="8">8</option>
+      <option value="9">9</option>
+      <option value="10">10</option>
+      <option value="11">11</option>
+      <option value="12">12</option>
+    </select>
+  </td>
+  <td>
+    <input type="text" id="addr_input" class="addr-input" placeholder="e.g. 0x05 ou 5">
+  </td>
+  <td>
+    <select id="type_input" class="sensor-type">
+  <option value="">Selecione…</option>
+  <option value="energia">Energia elétrica</option>
+  <option value="termohigrometro">Termo-higrômetro (T + UR)</option>
+  <option value="temperatura">Temperatura</option>
+  <option value="umidade">Umidade</option>
+  <option value="pressao">Pressão</option>
+  <option value="vazao">Vazão</option>
+  <option value="gps">GPS</option>
+  <option value="luz">Luz</option>
+  <option value="gas">Gás</option>
+  <option value="outro">Outros</option>
+</select>
+  </td>
+  <td>
+    <select id="subtype_input" class="sensor-subtype" disabled>
+      <option value="">—</option>
+      <option value="monofasico">Monofásico</option>
+      <option value="trifasico">Trifásico</option>
+    </select>
+  </td>
+</tr>
+<tr>
+  <td colspan="4" style="text-align:right; padding:0 8px 8px;">
+    <button type="button" id="addSensor">Adicionar Sensor</button>
+  </td>
+</tr>
 
+<!-- LISTA DE SENSORES ADICIONADOS -->
+<tr>
+  <td colspan="4">
+    <div id="sensorStatusList">
+      <!-- .sensor-line serão inseridas aqui -->
+    </div>
+  </td>
+</tr>
     <tr>
-      <th colspan="3" class="msg">
-        <input id="save" type="submit" value="Gravar" onClick="submit_form()"> 
+      <th colspan="4" class="msg">
+        <input id="save" type="button" value="Gravar" onClick="submit_form()">
       </th>
     </tr>
-    
+     
   </table>
- 
+  
   </h3>
   <script defer src="scripts/jquery-3.6.0.min.js"></script>
-  <script defer src="scripts/configAdmin.js"></script>
-  <script src="scripts/connection_monitor.js"></script>
+  <script defer src="scripts/configRS485.js"></script>
+  <script defer src="scripts/configOperation.js"></script>
+  <script defer src="scripts/connection_monitor.js"></script>
+  
 </body>
 </html>

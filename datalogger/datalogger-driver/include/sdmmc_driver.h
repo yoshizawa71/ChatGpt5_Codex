@@ -26,13 +26,13 @@ bool has_SD_FILE_Deleted_Pulse(void);
 bool has_SD_FILE_Deleted_Pressure(void);
 
 //bool read_record_file(uint32_t* byte_to_read, char* str);
-void save_record_pulse(uint32_t* record_index, struct record_pulse record);
+//void save_record_pulse(uint32_t* record_index, struct record_pulse record);
 bool read_record_file_sd(uint32_t* byte_to_read, char* str);
-void read_record_pulse(uint32_t record_index, struct record_pulse* record);
+//void read_record_pulse(uint32_t record_index, struct record_pulse* record);
 bool read_record_pulse_file(uint32_t* byte_to_read, char* str);
 
 //void save_record_pressure(uint32_t* record_index, struct record_pressure record,int channel);
-void read_record_pressure(uint32_t record_index, struct record_pressure * record, int channel);
+//void read_record_pressure(uint32_t record_index, struct record_pressure * record, int channel);
 bool read_record_pressure_file(uint32_t* byte_to_read, char* str);
 
 esp_err_t save_record_sd(int channel, char *data);

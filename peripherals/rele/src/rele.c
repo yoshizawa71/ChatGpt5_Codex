@@ -4,16 +4,15 @@
  *  Created on: 16 de out. de 2021
  *      Author: geopo
  */
-
 #include "driver/gpio.h"
-#include "datalogger_driver.h"
 #include "esp32/rom/gpio.h"
 #include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static void rele_setup(void);
 
 uint8_t rele=5;
-
 
 static void rele_setup(void)
 {

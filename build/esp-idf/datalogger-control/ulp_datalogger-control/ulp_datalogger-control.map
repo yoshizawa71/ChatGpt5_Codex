@@ -1,0 +1,66 @@
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+ram              0x0000000000000000 0x0000000000000400 rw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+
+.text           0x0000000000000000      0x250 load address 0x000000000000000c
+ *(.text)
+ .text          0x0000000000000000       0x78 CMakeFiles/ulp_datalogger-control.dir/pulse_counter.ulp.S.obj
+                0x0000000000000000                pulse_status
+                0x0000000000000004                pulse_status_next
+                0x0000000000000008                pulsed
+                0x000000000000000c                err_halt
+                0x0000000000000010                entrance
+ .text          0x0000000000000078       0x34 CMakeFiles/ulp_datalogger-control.dir/wake_up.ulp.S.obj
+                0x0000000000000078                gpio_extern_sensor
+                0x000000000000007c                exit
+                0x0000000000000090                wake_up
+ .text          0x00000000000000ac      0x1a4 CMakeFiles/ulp_datalogger-control.dir/sleep_pulse_cnt.ulp.S.obj
+                0x00000000000000ac                entry
+                0x0000000000000164                changed
+                0x0000000000000180                edge_detected
+
+.data           0x0000000000000250        0x0 load address 0x000000000000025c
+                0x0000000000000250                . = ALIGN (0x4)
+ *(.data)
+ .data          0x0000000000000250        0x0 CMakeFiles/ulp_datalogger-control.dir/pulse_counter.ulp.S.obj
+ .data          0x0000000000000250        0x0 CMakeFiles/ulp_datalogger-control.dir/wake_up.ulp.S.obj
+ .data          0x0000000000000250        0x0 CMakeFiles/ulp_datalogger-control.dir/sleep_pulse_cnt.ulp.S.obj
+
+.bss            0x0000000000000250       0x3c load address 0x000000000000025c
+                0x0000000000000250                . = ALIGN (0x4)
+ *(.bss)
+ .bss           0x0000000000000250        0x0 CMakeFiles/ulp_datalogger-control.dir/pulse_counter.ulp.S.obj
+ .bss           0x0000000000000250        0x0 CMakeFiles/ulp_datalogger-control.dir/wake_up.ulp.S.obj
+ .bss           0x0000000000000250       0x3c CMakeFiles/ulp_datalogger-control.dir/sleep_pulse_cnt.ulp.S.obj
+                0x0000000000000250                io26_debounce_counter
+                0x0000000000000254                io26_debounce_max_count
+                0x0000000000000258                ext_sensor_status
+                0x000000000000025c                ext_sensor_activated
+                0x0000000000000260                system_stable
+                0x0000000000000264                sleep_transition_counter
+                0x0000000000000268                inactivity
+                0x000000000000026c                next_edge
+                0x0000000000000270                debounce_counter
+                0x0000000000000274                debounce_max_count
+                0x0000000000000278                edge_count
+                0x000000000000027c                edge_count_to_wake_up
+                0x0000000000000280                io_number
+                0x0000000000000284                ext_sensor_status_next
+                0x0000000000000288                io_ext_sensor
+
+.header         0x000000000000028c        0xc load address 0x0000000000000000
+                0x000000000000028c        0x4 LONG 0x706c75
+                0x0000000000000290        0x2 SHORT 0xc LOADADDR (.text)
+                0x0000000000000292        0x2 SHORT 0x250 SIZEOF (.text)
+                0x0000000000000294        0x2 SHORT 0x0 SIZEOF (.data)
+                0x0000000000000296        0x2 SHORT 0x3c SIZEOF (.bss)
+LOAD CMakeFiles/ulp_datalogger-control.dir/pulse_counter.ulp.S.obj
+LOAD CMakeFiles/ulp_datalogger-control.dir/wake_up.ulp.S.obj
+LOAD CMakeFiles/ulp_datalogger-control.dir/sleep_pulse_cnt.ulp.S.obj
+OUTPUT(ulp_datalogger-control.elf elf32-esp32ulp)

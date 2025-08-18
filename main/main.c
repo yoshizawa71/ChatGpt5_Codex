@@ -28,6 +28,9 @@
 #include "sleep_control.h"
 #include "led_blink_control.h"
 
+#include "modbus_rtu_master.h"
+
+
 #define ENABLE_OTA              0
 #define ENABLE_FACTORY_CONFIG   1
 #define ENABLE_PCNT             1 //PCNT foi deslocado para outro arquivo
@@ -198,7 +201,7 @@ static void release_rtc_holds(void) {
 
 void app_main(void)
 {
-	set_cpu_freq_rtc(80); // Definir frequência para 80 MHz
+//	set_cpu_freq_rtc(80); // Definir frequência para 80 MHz
 	restore_power_pin_after_wakeup();
 //	vTaskDelay(pdMS_TO_TICKS(300));
 	release_rtc_holds();
@@ -244,7 +247,7 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
     mount_sd_card();
 
      blink_init();
-//	deactivate_calibration();
+     
 
 /*
     listFilesInDir();
@@ -289,7 +292,7 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
 
 //-----------------------------------------------------------------------------------------
     if(!has_factory_config())
-      {	set_cpu_freq_rtc(160);
+      {	//set_cpu_freq_rtc(160);
         wifi_on=true;
         init_factory_task();
         first_factory_setup=true;
@@ -299,11 +302,11 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
             {
              case WAKE_UP_BOOT :
             	  printf("-->Wakeup Boot\n");
-            	  set_cpu_freq_rtc(160);
+            	 // set_cpu_freq_rtc(160);
             	  init_pulse_meter_task();
             	  init_timemanager_task();
             	  wifi_on=true;
-            	  init_factory_task();            	     
+            	  init_factory_task();         	     
         	          
              break;
 
@@ -316,7 +319,7 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
 
               case WAKE_UP_RING :
             	   printf("-->Wakeup Ring\n");
-            	   set_cpu_freq_rtc(160);
+            	 //  set_cpu_freq_rtc(160);
             	   init_pulse_meter_task();
             	   wifi_on=true;
             	   init_factory_task();
@@ -337,7 +340,7 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
  */               
               case WAKE_UP_EXTERN_SENSOR :
                	   printf("-->Wakeup EXTERN SENSOR\n");
-               	   set_cpu_freq_rtc(160);
+               	 //  set_cpu_freq_rtc(160);
                	   init_pulse_meter_task();
                	   wifi_on=true;
                	   init_factory_task();

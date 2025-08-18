@@ -1,29 +1,11 @@
-# README #
+ESP-IDF template app
+====================
 
-This README would normally document whatever steps are necessary to get your application up and running.
+This is a template application to be used with [Espressif IoT Development Framework](https://github.com/espressif/esp-idf).
 
-### What is this repository for? ###
+Please check [ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for getting started instructions.
 
-* Quick summary
-* Version
-* [Learn Markdown](https://bitbucket.org/tutorials/markdowndemo)
-
-### How do I get set up? ###
-
-* Summary of set up
-* Configuration
-* Dependencies
-* Database configuration
-* How to run tests
-* Deployment instructions
-
-### Contribution guidelines ###
-
-* Writing tests
-* Code review
-* Other guidelines
-
-### Who do I talk to? ###
-
-* Repo owner or admin
-* Other community or team contact
+*Code in this repository is in the Public Domain (or CC0 licensed, at your option.)
+Unless required by applicable law or agreed to in writing, this
+software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied.*

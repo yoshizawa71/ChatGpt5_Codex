@@ -311,7 +311,6 @@ TickType_t get_factory_routine_last_interaction(void);
 void init_ring_interruption(void);
 void ring_task_monitoring(void* arg);
 
-
 //SYSTEM FUNCTIONS
 void init_system(void);
 

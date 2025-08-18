@@ -1,0 +1,35 @@
+#sensorStatusList {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  padding: 8px;
+  margin: 16px 0;
+  background: #fafafa;
+}
+
+.sensor-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #eee;
+}
+.sensor-line:last-child {
+  border-bottom: none;
+}
+
+.sensor-desc {
+  font-size: 0.9em;
+  color: #333;
+}
+
+.status-icon {
+  font-size: 1.2em;
+  margin-left: 8px;
+}
+.status-icon.connected {
+  color: #4A90E2;    /* Azul */
+}
+.status-icon.disconnected {
+  color: #E24A4A;    /* Vermelho */
+}

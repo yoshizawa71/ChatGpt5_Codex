@@ -15,8 +15,12 @@ idf_component_register(SRCS "${src_driver}"
                             app_update esp_http_client esp_https_ota
                             datalogger-driver esp_http_server json mdns
                             spiffs oled_display rele pressure esp_wifi system
-                            4G
+                            4G RS485
                             )
+ 
+# Garante que o ld considere rs485_manager_ping "indefinido" desde o início,
+# assim ele extrai o objeto de libRS485.a mesmo que a lib venha antes na linha.
+target_link_options(${COMPONENT_LIB} PUBLIC "-Wl,--undefined=rs485_manager_ping")                       
 
 # ULP support additions to component CMakeLists.txt.
 #

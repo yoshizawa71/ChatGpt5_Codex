@@ -32,6 +32,9 @@
 #include "system.h"
 #include "TCA6408A.h"
 
+#include "tcp_log_server.h"
+#include "wifi_softap_sta.h"
+
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
 
@@ -79,6 +82,8 @@ static httpd_handle_t server = NULL;
 static void deinit_mdns(void);
 static esp_err_t stop_server(httpd_handle_t server);
 
+static void console_tcp_enable(uint16_t port);
+static void console_tcp_disable(void);
 //------------Tasks--------------
 static void shutdown_task(void* pvParameters);
 static void restart_ap_task(void *pvParameters);
@@ -500,6 +505,26 @@ static esp_err_t stop_server(httpd_handle_t server)
 	}
 
 	return ESP_ERR_INVALID_ARG;
+}
+
+// --- Console TCP: wrappers simples para ligar/desligar em um lugar só ---
+static void console_tcp_enable(uint16_t port)
+{
+    // Sobe servidor TCP em background (independe do IP já estar pronto)
+    ESP_ERROR_CHECK(start_tcp_log_server_task(port));
+    // Redireciona ESP_LOGx() para o "tee": Serial + TCP
+    tcp_log_install_tee();
+    // (opcional) aumentar verbosidade:
+    // esp_log_level_set("*", ESP_LOG_INFO);
+    ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
+}
+
+static void console_tcp_disable(void)
+{
+    // Restaura destino anterior do log e para o servidor TCP
+    tcp_log_uninstall_tee();
+    stop_tcp_log_server_task();
+    ESP_LOGI("CONSOLE", "TCP log console disabled");
 }
 //*******************************************
 //HTTP HANDLER FUNCTIONS
@@ -1622,8 +1647,8 @@ static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
         }
 
         ESP_LOGI(TAG, "Configuração STA aplicada, tentando conectar...");
-        set_activate_sta(true); // Atualiza dev_config e NVS
         sta_intentional_disconnect = false;
+        set_activate_sta(true);
         err = esp_wifi_connect();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Erro ao conectar STA: %s", esp_err_to_name(err));
@@ -1848,6 +1873,8 @@ static esp_err_t ping_handler(httpd_req_t *req)
 static void shutdown_task(void* pvParameters) {
 
     user_initiated_exit = true;
+  //  Desabilita TCP console (solta socket/printf)
+    console_tcp_disable();
             // Stop Factory server
     stop_factory_server();
     printf("Servidor HTTP parado.\n");
@@ -1956,7 +1983,9 @@ vTaskDelay(pdMS_TO_TICKS(1000));
 void init_factory_task(void)
 {
 	start_wifi_ap_sta();
-
+    // Inicia o console TCP (AP: 192.168.4.1:3333; em STA use o IP do roteador)
+    console_tcp_enable(3333);
+    ESP_LOGI("SELFTEST", "Hello TCP!");
 	if (Factory_Config_TaskHandle == NULL)
 	   {
         xTaskCreate( Factory_Config_Task, "Factory_Config_Task", 15000, NULL, 2, &Factory_Config_TaskHandle);
@@ -1969,5 +1998,3 @@ void deinit_factory_task(void)
   Factory_Config_TaskHandle = NULL;  
   printf("!!!Factor Finished!!!\n");	
 }
-
-

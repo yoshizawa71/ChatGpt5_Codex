@@ -15,6 +15,7 @@ idf_component_register(SRCS "main.c" "main_control.c"
                              oled_display
                              pressure
                              rele
+                             tcp_log_console
                              system
                              )
                              
