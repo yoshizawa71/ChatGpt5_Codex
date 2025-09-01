@@ -1,5 +1,0 @@
-C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp-idf/datalogger-control/ulp_datalogger-control/CMakeFiles/ulp_datalogger-control.dir
-C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp-idf/datalogger-control/ulp_datalogger-control/CMakeFiles/ld_script.dir
-C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp-idf/datalogger-control/ulp_datalogger-control/CMakeFiles/build.dir
-C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp-idf/datalogger-control/ulp_datalogger-control/CMakeFiles/edit_cache.dir
-C:/ESP_IA/WorkSpace_Test/smart_iot_platform/build/esp-idf/datalogger-control/ulp_datalogger-control/CMakeFiles/rebuild_cache.dir
