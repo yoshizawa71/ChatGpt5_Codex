@@ -1,8 +1,10 @@
-#include "hal/uart_types.h"
 #include "modbus_rtu_master.h"
-#include "rs485_hw.h"
+
+#include "hal/uart_types.h"
 #include "esp_log.h"
 #include <string.h>
+
+#include "rs485_hw.h"
 #include "esp_check.h"
 #include "soc/gpio_num.h"
 

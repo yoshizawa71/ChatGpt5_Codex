@@ -5,7 +5,7 @@
  *      Author: geopo
  */
 
-#include "../../termohigrometro/include/temp_hum_simple.h"
+#include "temp_hum_simple.h"
 
 #include "modbus_rtu_master.h"
 #include "esp_log.h"

@@ -19,8 +19,10 @@
 #include "sdmmc_driver.h"
 #include "TCA6408A.h"
 #include "oled_display.h"
-#include "sara_r422.h"
 #include "main.h"
+
+#include "sara_r422.h"
+#include "modbus_rtu_master.h"
 #include "system.h"
 #include "i2c_dev_master.h"
 #include "rele.h"
@@ -28,7 +30,6 @@
 #include "sleep_control.h"
 #include "led_blink_control.h"
 
-#include "modbus_rtu_master.h"
 
 
 #define ENABLE_OTA              0

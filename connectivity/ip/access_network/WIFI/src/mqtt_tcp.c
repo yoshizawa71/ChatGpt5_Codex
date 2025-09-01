@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+
+#include "comm_wifi.h"
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -18,7 +20,6 @@
 #include "lwip/apps/sntp.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
-#include "comm_wifi.h"
 #include "datalogger_control.h"
 #include "cJSON.h"
 #include "sdmmc_driver.h"

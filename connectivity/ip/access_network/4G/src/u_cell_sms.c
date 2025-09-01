@@ -8,13 +8,14 @@
  *  - cellSmsDelete: delete an SMS by index
  */
 
+#include "u_cell_sms.h"         // Header for SMS functions
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "u_cell_sms.h"         // Header for SMS functions
 #include "u_at_client.h"        // AT client API
 #include "u_port.h"             // uPort definitions
 #include "u_error_common.h"     // Common error codes

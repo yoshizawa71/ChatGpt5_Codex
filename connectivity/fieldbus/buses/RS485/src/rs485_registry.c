@@ -8,9 +8,10 @@
  * rs485_registry.c — Alinhado com as opções do front
  */
 
+#include "rs485_registry.h"
+
 #include <string.h>
 #include <ctype.h>
-#include "rs485_registry.h"
 #include "temperature_rs485.h"  // seu driver T/UR
 
 // ===== Configuração: canal da umidade no mesmo canal do T? =====

@@ -15,6 +15,9 @@
 #include "time.h"
 #include <sys/time.h>
 #include <datalogger_control.h>
+#include "sara_r422.h"
+#include "tcp_log_server.h"
+#include "comm_wifi.h"
 #include "datalogger_driver.h"
 
 #include"pulse_meter.h"
@@ -22,8 +25,6 @@
 #include "sdmmc_driver.h"
 
 #include "oled_display.h"
-#include "sara_r422.h"
-#include "comm_wifi.h"
 #include "nvs_flash.h"
 #include "4G_network.h"
 #include "system.h"
@@ -32,8 +33,7 @@
 #include "sleep_control.h"
 #include "led_blink_control.h"
 
-#include "tcp_log_server.h"
-
+#include "tcp_log_server.h"  
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 

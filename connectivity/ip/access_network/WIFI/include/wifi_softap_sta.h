@@ -5,8 +5,8 @@
  *      Author: geopo
  */
 
-#ifndef COMMUNICATIONS_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
-#define COMMUNICATIONS_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
+#ifndef CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
+#define CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
 
 #include "esp_err.h"
 #include <stdbool.h>
@@ -26,4 +26,4 @@ extern volatile bool sta_intentional_disconnect; // Flag de desconexão intencio
 // - AP     -> NONE
 esp_err_t wifi_set_mode_with_ps(wifi_mode_t mode);
 
-#endif /* COMMUNICATIONS_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_ */
+#endif /* CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_ */

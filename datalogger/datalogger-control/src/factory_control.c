@@ -3,6 +3,10 @@
 #include <datalogger_control.h>
 #include "datalogger_driver.h"
 #include <time.h>
+
+#include "sara_r422.h"
+#include "tcp_log_server.h"
+#include "wifi_softap_sta.h"
 #include "driver/sdmmc_host.h"
 #include "esp_http_server.h"
 #include "esp_sleep.h"
@@ -12,12 +16,11 @@
 #include "esp_vfs.h"
 #include "cJSON.h"
 #include "mdns.h"
-//#include "esp_spiffs.h"
+
 #include "esp_littlefs.h"
 #include "lwip/apps/netbiosns.h"
 #include "datalogger_driver.h"
 #include "oled_display.h"
-#include "sara_r422.h"
 #include "sdmmc_driver.h"
 #include "pressure_meter.h"
 #include "pulse_meter.h"
@@ -32,8 +35,6 @@
 #include "system.h"
 #include "TCA6408A.h"
 
-#include "tcp_log_server.h"
-#include "wifi_softap_sta.h"
 
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
@@ -59,6 +60,7 @@ bool Receive_Response_FactoryControl = false;
 
 #define NUM_CAL_POINTS 5
 
+#define RS485_MAP_UI_PATH   "/littlefs/rs485_map_ui.json"
 
 typedef struct rest_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
@@ -103,6 +105,10 @@ static esp_err_t config_operation_get_handler(httpd_req_t *req);
 static esp_err_t config_operation_post_handler(httpd_req_t *req);
 static esp_err_t exit_device_post_handler(httpd_req_t *req);
 static esp_err_t ping_handler(httpd_req_t *req);
+
+static esp_err_t rs485_config_get_handler(httpd_req_t *req);
+static esp_err_t rs485_config_post_handler(httpd_req_t *req);
+static esp_err_t rs485_ping_get_handler(httpd_req_t *req);
 
 //------------------------------------------------------------------
 
@@ -274,8 +280,8 @@ static esp_err_t start_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.stack_size = 10240; // Aumenta a pilha para evitar falhas
-    config.max_uri_handlers = 20;
-//    config.max_open_sockets = 7; // Mais sockets para múltiplas conexões
+    config.max_uri_handlers = 25;
+    config.max_open_sockets = 7; // Mais sockets para múltiplas conexões
     config.lru_purge_enable = true; // Limpa sockets ociosos
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -431,6 +437,36 @@ httpd_register_uri_handler(server, &rele_post_uri);
     };
     httpd_register_uri_handler(server, &load_registers_get_uri);
     
+//----------------------------------------------------------
+//           RS485 Config
+
+// ---------------- RS485 CONFIG GET ----------------
+    httpd_uri_t rs485_config_get_uri = {
+        .uri      = "/rs485ConfigGet",
+        .method   = HTTP_GET,
+        .handler  = rs485_config_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_config_get_uri);
+
+// ---------------- RS485 CONFIG SAVE (POST) ----------------
+    httpd_uri_t rs485_config_post_uri = {
+        .uri      = "/rs485ConfigSave",
+        .method   = HTTP_POST,
+        .handler  = rs485_config_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_config_post_uri);
+
+// ---------------- RS485 PING (GET) ----------------
+    httpd_uri_t rs485_ping_get_uri = {
+        .uri      = "/rs485Ping",
+        .method   = HTTP_GET,
+        .handler  = rs485_ping_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_ping_get_uri);
+  
 //----------------------------------------------------------
 //           Delete the file
 //----------------------------------------------------------
@@ -742,6 +778,94 @@ save_button_action=true;//para saber que o botão de gravar foi acionado.
     return ESP_OK;
 }
 
+static esp_err_t config_operation_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "serial_number", get_serial_number());
+    cJSON_AddStringToObject(root, "company", get_company());
+    cJSON_AddStringToObject(root, "ds_start", get_deep_sleep_start());
+    cJSON_AddStringToObject(root, "ds_end", get_deep_sleep_end());
+    if(has_reset_count())
+    {
+        cJSON_AddTrueToObject(root, "count_reset");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "count_reset");
+    }
+    cJSON_AddStringToObject(root, "keep_alive", get_keep_alive());
+ /*   if(has_log_level_1())
+    {
+        cJSON_AddTrueToObject(root, "log1");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "log1");
+    }
+    if(has_log_level_2())
+    {
+        cJSON_AddTrueToObject(root, "log2");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "log2");
+    }*/
+
+    //--------------------------------------------
+    if(has_enable_post())
+    {
+        cJSON_AddTrueToObject(root, "post_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "post_en");
+    }
+    if(has_enable_get())
+    {
+        cJSON_AddTrueToObject(root, "get_en");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "get_en");
+    }
+
+    cJSON_AddStringToObject(root, "config_server_url", get_config_server_url());
+    cJSON_AddNumberToObject(root, "config_server_port", get_config_server_port());
+    cJSON_AddStringToObject(root, "config_server_path", get_config_server_path());
+    
+    cJSON_AddNumberToObject(root, "level_min", get_level_min());
+    cJSON_AddNumberToObject(root, "level_max", get_level_max());
+    
+    
+    //**********************
+    time_t t = get_last_data_sent();
+    char buff[20];
+    strftime(buff, 20, "%d/%m/%Y %H:%M:%S", localtime(&t));
+    if (TIME_REFERENCE < get_last_data_sent()) // Serve para não aparecer a data de 1969
+      {
+       cJSON_AddStringToObject(root, "last_comm", buff);
+      }
+
+    cJSON_AddNumberToObject(root, "csq", get_csq());
+
+    //**********************
+/*    float voltage_bat= (float)get_battery();
+    voltage_bat=voltage_bat*0.002;
+    char voltage[5];
+    sprintf (voltage, "%.2f", voltage_bat);
+
+    cJSON_AddStringToObject(root, "battery", voltage);*/
+
+    //**********************
+    const char *config_operation = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, config_operation);
+    free((void *)config_operation);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+//--------------------------------------------------------------------
+
 static esp_err_t config_operation_post_handler(httpd_req_t *req)
 {
     update_last_interaction();
@@ -788,7 +912,182 @@ static esp_err_t config_operation_post_handler(httpd_req_t *req)
     save_config();
     return ESP_OK;
 }
+//--------------------------------------------------------------------
+// GET /rs485ConfigGet  -> devolve JSON { "sensors": [...] }
+// 1) se existir RS485_MAP_UI_PATH (JSON), entrega-o (contém type/subtype);
+// 2) senão, carrega do binário e monta JSON com type/subtype vazios.
+static esp_err_t rs485_config_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
 
+    // 1) Tenta devolver o JSON persistido do front
+    FILE *fj = fopen(RS485_MAP_UI_PATH, "rb");
+    if (fj) {
+        fseek(fj, 0, SEEK_END);
+        long sz = ftell(fj);
+        rewind(fj);
+        if (sz > 0 && sz < 8192) {
+            char *buf = malloc((size_t)sz + 1);
+            if (buf) {
+                size_t n = fread(buf, 1, (size_t)sz, fj);
+                buf[n] = '\0';
+                fclose(fj);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_sendstr(req, buf);
+                free(buf);
+                return ESP_OK;
+            }
+        }
+        fclose(fj);
+    }
+
+    // 2) Fallback: monta JSON a partir do binário salvo
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+
+    sensor_map_t map[RS485_MAX_SENSORS] = {0};
+    size_t count = 0;
+    load_rs485_config(map, &count);  // persiste channel/address no binário  :contentReference[oaicite:4]{index=4}
+
+    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
+        cJSON *it = cJSON_CreateObject();
+        cJSON_AddNumberToObject(it, "channel", map[i].channel);
+        cJSON_AddNumberToObject(it, "address", map[i].address);
+        cJSON_AddStringToObject(it, "type", "");     // sem informação no binário
+        cJSON_AddStringToObject(it, "subtype", "");  // idem
+        cJSON_AddItemToArray(arr, it);
+    }
+    cJSON_AddItemToObject(root, "sensors", arr);
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{\"sensors\":[]}");
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// POST /rs485ConfigSave  -> recebe JSON { "sensors":[{channel,address,type,subtype},...] }
+// - Salva channel/address no binário oficial (usado pelo firmware);
+// - Salva o JSON completo (com type/subtype) em RS485_MAP_UI_PATH para o front.
+static esp_err_t rs485_config_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    rest_server_context_t *ctx = (rest_server_context_t *) req->user_ctx;
+    int total = req->content_len;
+    if (total <= 0 || total >= SCRATCH_BUFSIZE) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad_size\"}");
+        return ESP_OK;
+    }
+
+    int got = 0;
+    while (got < total) {
+        int r = httpd_req_recv(req, ctx->scratch + got, total - got);
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"error\":\"recv\"}");
+            return ESP_OK;
+        }
+        got += r;
+    }
+    ctx->scratch[total] = '\0';
+
+    cJSON *root = cJSON_Parse(ctx->scratch);
+    if (!root) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"json_parse\"}");
+        return ESP_OK;
+    }
+    cJSON *arr = cJSON_GetObjectItem(root, "sensors");
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"sensors_array_missing\"}");
+        return ESP_OK;
+    }
+
+    // Monta vetor p/ persistência binária (channel/address)
+    sensor_map_t map[RS485_MAX_SENSORS] = {0};
+    size_t count = 0;
+
+    cJSON *it = NULL;
+    cJSON_ArrayForEach(it, arr) {
+        if (count >= RS485_MAX_SENSORS) break;
+        cJSON *jc = cJSON_GetObjectItem(it, "channel");
+        cJSON *ja = cJSON_GetObjectItem(it, "address");
+        if (!cJSON_IsNumber(jc) || !cJSON_IsNumber(ja)) continue;
+
+        map[count].channel = (uint8_t) jc->valuedouble;
+        map[count].address = (uint8_t) ja->valuedouble;
+        count++;
+    }
+
+    // 1) salva o binário oficial usado pelo firmware  :contentReference[oaicite:5]{index=5}
+    save_rs485_config(map, count);
+
+    // 2) salva o JSON completo para o front (preserva type/subtype)
+    FILE *fj = fopen(RS485_MAP_UI_PATH, "wb");
+    if (fj) {
+        // opcional: re-serializar para padronizar
+        char *compacted = cJSON_PrintUnformatted(root);
+        if (compacted) {
+            fwrite(compacted, 1, strlen(compacted), fj);
+            free(compacted);
+        }
+        fclose(fj);
+    }
+
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+
+// ========================================================
+// RS485 - PING: GET /rs485Ping?channel=X&address=Y
+// Por ora, devolvemos um stub { "alive": false } para tirar o 500.
+// Depois, é só conectar aqui sua função rs485_ping() real.
+// ========================================================
+static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    // Parseia query (opcional, só para logar/validar)
+    char buf[64];
+    int qlen = httpd_req_get_url_query_len(req) + 1;
+    int ch = 0, addr = 0;
+
+    if (qlen > 1 && qlen < sizeof(buf)) {
+        if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+            char param[16];
+            if (httpd_query_key_value(buf, "channel", param, sizeof(param)) == ESP_OK) {
+                ch = atoi(param);
+            }
+            if (httpd_query_key_value(buf, "address", param, sizeof(param)) == ESP_OK) {
+                addr = atoi(param);
+            }
+        }
+    }
+
+    // TODO: integrar com seu gerenciador RS485 e responder o real status
+    // bool alive = rs485_ping((uint8_t)ch, (uint8_t)addr);
+    bool alive = false;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "alive", alive);
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+
+    if (json) free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+//--------------------------------------------------------------------
 static esp_err_t config_maintenance_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "--- INÍCIO /configMaintGet ---");
     update_last_interaction();
@@ -1104,93 +1403,7 @@ if (cJSON_HasObjectItem(root, "unit")) {
 }
 
 
-static esp_err_t config_operation_get_handler(httpd_req_t *req)
-{
-    update_last_interaction();
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "serial_number", get_serial_number());
-    cJSON_AddStringToObject(root, "company", get_company());
-    cJSON_AddStringToObject(root, "ds_start", get_deep_sleep_start());
-    cJSON_AddStringToObject(root, "ds_end", get_deep_sleep_end());
-    if(has_reset_count())
-    {
-        cJSON_AddTrueToObject(root, "count_reset");
-    }
-    else
-    {
-        cJSON_AddFalseToObject(root, "count_reset");
-    }
-    cJSON_AddStringToObject(root, "keep_alive", get_keep_alive());
- /*   if(has_log_level_1())
-    {
-        cJSON_AddTrueToObject(root, "log1");
-    }
-    else
-    {
-        cJSON_AddFalseToObject(root, "log1");
-    }
-    if(has_log_level_2())
-    {
-        cJSON_AddTrueToObject(root, "log2");
-    }
-    else
-    {
-        cJSON_AddFalseToObject(root, "log2");
-    }*/
 
-    //--------------------------------------------
-    if(has_enable_post())
-    {
-        cJSON_AddTrueToObject(root, "post_en");
-    }
-    else
-    {
-        cJSON_AddFalseToObject(root, "post_en");
-    }
-    if(has_enable_get())
-    {
-        cJSON_AddTrueToObject(root, "get_en");
-    }
-    else
-    {
-        cJSON_AddFalseToObject(root, "get_en");
-    }
-
-    cJSON_AddStringToObject(root, "config_server_url", get_config_server_url());
-    cJSON_AddNumberToObject(root, "config_server_port", get_config_server_port());
-    cJSON_AddStringToObject(root, "config_server_path", get_config_server_path());
-    
-    cJSON_AddNumberToObject(root, "level_min", get_level_min());
-    cJSON_AddNumberToObject(root, "level_max", get_level_max());
-    
-    
-    //**********************
-    time_t t = get_last_data_sent();
-    char buff[20];
-    strftime(buff, 20, "%d/%m/%Y %H:%M:%S", localtime(&t));
-    if (TIME_REFERENCE < get_last_data_sent()) // Serve para não aparecer a data de 1969
-      {
-       cJSON_AddStringToObject(root, "last_comm", buff);
-      }
-
-    cJSON_AddNumberToObject(root, "csq", get_csq());
-
-    //**********************
-/*    float voltage_bat= (float)get_battery();
-    voltage_bat=voltage_bat*0.002;
-    char voltage[5];
-    sprintf (voltage, "%.2f", voltage_bat);
-
-    cJSON_AddStringToObject(root, "battery", voltage);*/
-
-    //**********************
-    const char *config_operation = cJSON_PrintUnformatted(root);
-    httpd_resp_sendstr(req, config_operation);
-    free((void *)config_operation);
-    cJSON_Delete(root);
-    return ESP_OK;
-}
-//--------------------------------------------------------------------
 
 static esp_err_t rele_activate(httpd_req_t *req)
 {
@@ -1286,7 +1499,7 @@ static void exit_ap_task(void *pvParameters) {
        esp_wifi_set_mode(WIFI_MODE_STA); // Apenas STA
        ESP_LOGI(TAG, "AP desconectado temporariamente (STA ativo)");
        ap_active = false;
-       xTaskCreate(restart_ap_task, "restart_ap_task", 2048, NULL, 5, NULL);
+       xTaskCreate(restart_ap_task, "restart_ap_task", 4096, NULL, 5, NULL);
         
        vTaskDelete(NULL);
 }
@@ -1318,10 +1531,10 @@ static esp_err_t exit_device_post_handler(httpd_req_t *req) {
     
     if (has_activate_sta()&&ap_active)
 	   {
-		xTaskCreate(exit_ap_task, "exit_ap_task", 2048, req, 5, NULL);
+		xTaskCreate(exit_ap_task, "exit_ap_task", 4096, req, 5, NULL);
        }
     else{  
-        xTaskCreate(shutdown_task, "shutdown_task", 2048, NULL, 5, NULL);  
+        xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);  
 	   }
 	   
 	   if(first_factory_setup&&has_factory_config())
@@ -1940,7 +2153,7 @@ void Factory_Config_Task(void* pvParameters)
 							user_initiated_exit = true; 
 	                        save_system_config_data_time();
 	                        printf(">>>!!!Go to Deep Sleep!!!<<<\n");
-                             xTaskCreate(shutdown_task, "shutdown_task", 2048, NULL, 5, NULL);
+                             xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);
                                    
                             }
                                           

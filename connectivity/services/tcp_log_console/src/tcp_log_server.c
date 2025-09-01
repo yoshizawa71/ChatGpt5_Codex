@@ -2,6 +2,7 @@
 // Console TCP para logs, com ring buffer, bind no IP do AP e envio non-blocking.
 
 #include "tcp_log_server.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
