@@ -34,3 +34,6 @@ __pycache__/
 # --- IDF configs ---
 sdkconfig.old     # ignore o backup
 !sdkconfig        # sempre versionar o sdkconfig
+
+managed_components/
+**/managed_components/
