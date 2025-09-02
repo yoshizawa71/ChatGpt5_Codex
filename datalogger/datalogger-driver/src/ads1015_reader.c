@@ -10,12 +10,23 @@
 
 #define MOVING_AVG_WINDOW 10
 
+static ads1015_t s_adc = {0};
+static SemaphoreHandle_t s_ads_lock;
+
 static float raw_buffer_ch1[MOVING_AVG_WINDOW] = {0};
 static float raw_buffer_ch2[MOVING_AVG_WINDOW] = {0};
 static int buffer_idx_ch1 = 0, buffer_count_ch1 = 0;
 static int buffer_idx_ch2 = 0, buffer_count_ch2 = 0;
 
 static const char* TAG = "ads1015";
+
+static inline void ads_lock(void){
+    if (!s_ads_lock) s_ads_lock = xSemaphoreCreateRecursiveMutex();
+    xSemaphoreTakeRecursive(s_ads_lock, portMAX_DELAY);
+}
+static inline void ads_unlock(void){
+    xSemaphoreGiveRecursive(s_ads_lock);
+}
 
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
     const bool ret = 1;  // Dummy value to pass to queue
@@ -219,61 +230,62 @@ double ads1015_get_voltage(ads1015_t* ads) {
     raw = ads1015_get_raw(ads);
     return (double)raw * fsr[ads->config.bit.PGA] / (double)bits;
 }
-
+//Fazer depois --> Antes de desligar pelo MOSFET: feche o handle do ADS (remova o device do barramento) e pare leituras.
+//Depois de ligar pelo MOSFET: dê um pequeno delay de estabilização e deixe o lazy-init recriar o handle na 1ª leitura.
 float oneshot_analog_read(sensor_t tipo) {
-    ads1015_t adc;
+    ads_lock();
+
+    // lazy-init do device 0x48 uma única vez
+    if (!s_adc.dev_handle) {
+        s_adc = ads1015_config(ADS1015_ADDR_GND);   // add no barramento
+        if (!s_adc.dev_handle) { ads_unlock(); return 0.0f; }
+    }
+
     int16_t get_raw;
     float voltage = 0;
 
     switch (tipo) {
-        case analog_1:
-            adc = ads1015_config(ADS1015_ADDR_GND);
-            ads1015_set_mux(&adc, ADS1015_MUX_3_GND);
-            get_raw = ads1015_get_raw(&adc);
-//            voltage = ads1015_get_voltage(&adc);
-//média móvel
-            voltage = apply_moving_average(ads1015_get_voltage(&adc), raw_buffer_ch1, &buffer_idx_ch1, &buffer_count_ch1);
-            printf("###### Analog 1 #####\n");
-            printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
-            ads1015_deinit(&adc);
-            break;
+      case analog_1:
+        ads1015_set_mux(&s_adc, ADS1015_MUX_3_GND);
+        get_raw = ads1015_get_raw(&s_adc);
+        voltage = apply_moving_average(ads1015_get_voltage(&s_adc),
+                                       raw_buffer_ch1, &buffer_idx_ch1, &buffer_count_ch1);
+        printf("###### Analog 1 #####\n");
+        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        break;
 
-        case analog_2:
-            adc = ads1015_config(ADS1015_ADDR_GND);
-            ads1015_set_mux(&adc, ADS1015_MUX_2_GND);
-            get_raw = ads1015_get_raw(&adc);
-//            voltage = ads1015_get_voltage(&adc);
-//média móvel
-            voltage = apply_moving_average(ads1015_get_voltage(&adc), raw_buffer_ch2, &buffer_idx_ch2, &buffer_count_ch2);
-            printf("###### Analog 2 #####\n");
-            printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
-            ads1015_deinit(&adc);
-            break;
+      case analog_2:
+        ads1015_set_mux(&s_adc, ADS1015_MUX_2_GND);
+        get_raw = ads1015_get_raw(&s_adc);
+        voltage = apply_moving_average(ads1015_get_voltage(&s_adc),
+                                       raw_buffer_ch2, &buffer_idx_ch2, &buffer_count_ch2);
+        printf("###### Analog 2 #####\n");
+        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        break;
 
-        case fonte:
-            adc = ads1015_config(ADS1015_ADDR_GND);
-            ads1015_set_mux(&adc, ADS1015_MUX_1_GND);
-            get_raw = ads1015_get_raw(&adc);
-            voltage = ads1015_get_voltage(&adc);
-            printf("###### Analog 3 #####\n");
-            printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
-            ads1015_deinit(&adc);
-            break;
+      case fonte:
+        ads1015_set_mux(&s_adc, ADS1015_MUX_1_GND);
+        get_raw = ads1015_get_raw(&s_adc);
+        voltage = ads1015_get_voltage(&s_adc);
+        printf("###### Analog 3 #####\n");
+        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        break;
 
-        case bateria:
-            adc = ads1015_config(ADS1015_ADDR_GND);
-            ads1015_set_mux(&adc, ADS1015_MUX_0_GND);
-            get_raw = ads1015_get_raw(&adc);
-            voltage = ads1015_get_voltage(&adc);
-            printf("###### Analog 4 #####\n");
-            printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
-            ads1015_deinit(&adc);
-            break;
+      case bateria:
+        ads1015_set_mux(&s_adc, ADS1015_MUX_0_GND);
+        get_raw = ads1015_get_raw(&s_adc);
+        voltage = ads1015_get_voltage(&s_adc);
+        printf("###### Analog 4 #####\n");
+        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        break;
 
-        default:
-            printf("Sensor inexistente!\n");
-            break;
+      default:
+        printf("Sensor inexistente!\n");
+        voltage = 0.0f;
+        break;
     }
+
+    ads_unlock();
     return voltage;
 }
 

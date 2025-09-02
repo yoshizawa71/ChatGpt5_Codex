@@ -30,7 +30,7 @@
 #include "sleep_control.h"
 #include "led_blink_control.h"
 
-
+#include "log_mux.h"
 
 #define ENABLE_OTA              0
 #define ENABLE_FACTORY_CONFIG   1
@@ -160,6 +160,16 @@ static void check_i2c_bus(void) {
     }
 }
 
+static void logmux_early_init(void)
+{
+    // Instala o mux como vprintf do ESP_LOG
+    logmux_init(NULL);          // ainda sem writer TCP
+    // Duplicação por padrão: mantemos Serial ligada
+    logmux_enable_uart(true);
+    logmux_enable_tcp(false);   // TCP liga quando o console subir
+}
+
+
 static void restore_power_pin_after_wakeup(void)
 {
     gpio_num_t PWR_GPIO = GPIO_NUM_27;
@@ -209,6 +219,7 @@ void app_main(void)
 	wake_up_cause_t wkupcause = check_wakeup_cause();
 	ulp_system_stable = 1;
 	
+	logmux_early_init();
 	esp_err_t ret;
 
 ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");

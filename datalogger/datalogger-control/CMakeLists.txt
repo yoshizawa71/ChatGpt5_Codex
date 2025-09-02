@@ -15,7 +15,7 @@ idf_component_register(SRCS "${src_driver}"
                             app_update esp_http_client esp_https_ota
                             datalogger-driver esp_http_server json mdns
                             spiffs oled_display rele pressure esp_wifi system
-                            4G RS485
+                            4G RS485 log_mux
                             )
  
 # Garante que o ld considere rs485_manager_ping "indefinido" desde o início,

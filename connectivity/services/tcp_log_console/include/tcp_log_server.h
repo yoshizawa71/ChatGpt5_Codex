@@ -26,9 +26,9 @@ typedef void* httpd_handle_t; // forward se o projeto já define, ok manter aqui
 esp_err_t tcp_log_register_http_endpoint(void *httpd_handle, const char *path);
 
 // Instala um "tee": log vai para TCP e para o destino anterior (UART ou none).
-void tcp_log_install_tee(void);
+/*void tcp_log_install_tee(void);
 // Remove o tee e restaura o destino anterior.
-void tcp_log_uninstall_tee(void);
+void tcp_log_uninstall_tee(void);*/
 
 void      tcp_log_force_close_client(void);
 #ifdef __cplusplus

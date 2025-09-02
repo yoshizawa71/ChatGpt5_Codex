@@ -270,7 +270,7 @@ void stop_tcp_log_server_task(void) {
 }
 
 /* =========================== TEE de log =========================== */
-static vprintf_like_t s_prev_logger = NULL;
+/*static vprintf_like_t s_prev_logger = NULL;
 
 static int tee_vprintf(const char *fmt, va_list args) {
     (void)tcp_log_vprintf(fmt, args);
@@ -292,4 +292,4 @@ void tcp_log_uninstall_tee(void) {
         (void)esp_log_set_vprintf(s_prev_logger);
         s_prev_logger = NULL;
     }
-}
+}*/

@@ -6,6 +6,7 @@
 
 #include "sara_r422.h"
 #include "tcp_log_server.h"
+#include "log_mux.h"
 #include "wifi_softap_sta.h"
 #include "driver/sdmmc_host.h"
 #include "esp_http_server.h"
@@ -549,7 +550,13 @@ static void console_tcp_enable(uint16_t port)
     // Sobe servidor TCP em background (independe do IP já estar pronto)
     ESP_ERROR_CHECK(start_tcp_log_server_task(port));
     // Redireciona ESP_LOGx() para o "tee": Serial + TCP
-    tcp_log_install_tee();
+//    tcp_log_install_tee();
+    // (Re)instala o mux como vprintf (seguro chamar mais de uma vez)
+    logmux_init(NULL);
+    // Pluga o writer do TCP e habilita duplicação
+    logmux_set_tcp_writer(tcp_log_vprintf);
+    logmux_enable_uart(true);   // mantém serial ativa
+    logmux_enable_tcp(true);    // adiciona TCP -> DUPLICADO
     // (opcional) aumentar verbosidade:
     // esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
@@ -557,8 +564,9 @@ static void console_tcp_enable(uint16_t port)
 
 static void console_tcp_disable(void)
 {
+	logmux_enable_tcp(false);
     // Restaura destino anterior do log e para o servidor TCP
-    tcp_log_uninstall_tee();
+ //   tcp_log_uninstall_tee();
     stop_tcp_log_server_task();
     ESP_LOGI("CONSOLE", "TCP log console disabled");
 }
