@@ -25,19 +25,21 @@ static const char *TAG = "TCP_LOG";
 static char   s_rbuf[LOG_RBUF_SZ];
 static size_t s_rhead = 0;
 static bool   s_rfull = false;
-static SemaphoreHandle_t s_rmtx = NULL;
+//static SemaphoreHandle_t s_rmtx = NULL;
+static portMUX_TYPE s_rspin = portMUX_INITIALIZER_UNLOCKED;
 
-static void rbuf_init(void) {
+/*static void rbuf_init(void) {
     if (!s_rmtx) {
         s_rmtx = xSemaphoreCreateMutex();
     }
-}
+}*/
 
 static void rbuf_write(const char *data, size_t len) {
-    if (!s_rmtx) {
+/*    if (!s_rmtx) {
         rbuf_init();
-    }
-    xSemaphoreTake(s_rmtx, portMAX_DELAY);
+    }*/
+//    xSemaphoreTake(s_rmtx, portMAX_DELAY);
+portENTER_CRITICAL(&s_rspin);
 
     size_t off = 0;
     while (off < len) {
@@ -48,16 +50,16 @@ static void rbuf_write(const char *data, size_t len) {
         if (s_rhead == 0) s_rfull = true;
         off += chunk;
     }
-
-    xSemaphoreGive(s_rmtx);
+portEXIT_CRITICAL(&s_rspin);
+//    xSemaphoreGive(s_rmtx);
 }
 
 static size_t rbuf_snapshot(char *out, size_t out_sz) {
-    if (!s_rmtx) {
+/*    if (!s_rmtx) {
         rbuf_init();
-    }
-    xSemaphoreTake(s_rmtx, portMAX_DELAY);
-
+    }*/
+ //   xSemaphoreTake(s_rmtx, portMAX_DELAY);
+portENTER_CRITICAL(&s_rspin);
     size_t total = s_rfull ? LOG_RBUF_SZ : s_rhead;
     if (total > out_sz) total = out_sz;
     size_t start = s_rfull ? s_rhead : 0;
@@ -65,7 +67,11 @@ static size_t rbuf_snapshot(char *out, size_t out_sz) {
         out[i] = s_rbuf[(start + i) % LOG_RBUF_SZ];
     }
 
-    xSemaphoreGive(s_rmtx);
+    s_rhead = 0;
+    s_rfull = false;
+//    xSemaphoreGive(s_rmtx);
+portEXIT_CRITICAL(&s_rspin);
+
     return total;
 }
 /* ======================================================= */
@@ -106,7 +112,7 @@ void tcp_log_force_close_client(void) {
 }
 
 /* vprintf hook: guarda no buffer e tenta enviar ao cliente sem bloquear */
-int tcp_log_vprintf(const char *fmt, va_list args) {
+/*int tcp_log_vprintf(const char *fmt, va_list args) {
     char buf[512];
     int n = vsnprintf(buf, sizeof(buf) - 3, fmt, args);
     if (n <= 0) return 0;
@@ -146,7 +152,22 @@ int tcp_log_vprintf(const char *fmt, va_list args) {
     return sent;
 }
     return n;
+}*/
+
+int tcp_log_vprintf(const char *fmt, va_list args)
+{
+    char buf[512];
+    int n = vsnprintf(buf, sizeof(buf) - 2, fmt, args);
+    if (n <= 0) return 0;
+    if (n > (int)sizeof(buf) - 2) n = sizeof(buf) - 2;
+
+    // opcional: normaliza fim de linha
+    if (n && buf[n-1] == '\n') { buf[n-1] = '\r'; buf[n++] = '\n'; }
+
+    rbuf_write(buf, n);   // <-- só escreve no ring
+    return n;
 }
+
 
 static void tcp_log_server_task(void *arg) {
     (void)arg;
@@ -233,6 +254,16 @@ static void tcp_log_server_task(void *arg) {
         // Loop: consome input (Enter etc.) e detecta desconexão
         while (s_client_sock >= 0) {
             char sink[64];
+            static char out[1024];
+            size_t n = rbuf_snapshot(out, sizeof(out));
+            if (n > 0) {
+                int sent = send(s_client_sock, out, n, MSG_DONTWAIT);
+              if (sent < 0 && errno != EWOULDBLOCK && errno != EAGAIN) {
+                close_client();
+                 break;
+                }
+            } 
+            
             int r = recv(s_client_sock, sink, sizeof(sink), MSG_DONTWAIT);
             if (r == 0) {            // peer fechou
                 close_client();

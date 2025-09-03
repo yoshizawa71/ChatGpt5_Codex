@@ -26,6 +26,7 @@ set(EXTRA_COMPONENT_DIRS "")
 list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/components/ssd1306
     ${CMAKE_SOURCE_DIR}/connectivity/fieldbus/buses/RS485
+    ${CMAKE_SOURCE_DIR}/connectivity/fieldbus/protocols/modbus
     ${CMAKE_SOURCE_DIR}/connectivity/ip/access_network
     ${CMAKE_SOURCE_DIR}/connectivity/services/tcp_log_console
     ${CMAKE_SOURCE_DIR}/connectivity/services/log_mux

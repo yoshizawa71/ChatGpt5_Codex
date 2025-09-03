@@ -7,7 +7,7 @@
 
 #include "temp_hum_simple.h"
 
-#include "modbus_rtu_master.h"
+//#include "modbus_rtu_master.h"
 #include "esp_log.h"
 
 static const char *TAG = "TH_SIMPLE";
@@ -16,7 +16,7 @@ static inline float scale_val(int16_t v, float scale) {
     return (float)v * scale;
 }
 
-esp_err_t th_simple_read(uint8_t unit_id,
+/*esp_err_t th_simple_read(uint8_t unit_id,
                          uint16_t base_reg,
                          bool input_regs,
                          float scale,
@@ -47,7 +47,7 @@ esp_err_t th_simple_read(uint8_t unit_id,
     if (out->humidity_rh   < 0   || out->humidity_rh   > 100) return ESP_ERR_INVALID_RESPONSE;
 
     return ESP_OK;
-}
+}*/
 
 
 

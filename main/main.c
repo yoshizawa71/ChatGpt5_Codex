@@ -22,7 +22,7 @@
 #include "main.h"
 
 #include "sara_r422.h"
-#include "modbus_rtu_master.h"
+//#include "modbus_rtu_master.h"
 #include "system.h"
 #include "i2c_dev_master.h"
 #include "rele.h"

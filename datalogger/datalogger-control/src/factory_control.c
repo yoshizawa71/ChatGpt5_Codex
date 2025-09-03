@@ -6,6 +6,7 @@
 
 #include "sara_r422.h"
 #include "tcp_log_server.h"
+#include "modbus_rtu_master.h"
 #include "log_mux.h"
 #include "wifi_softap_sta.h"
 #include "driver/sdmmc_host.h"
@@ -560,6 +561,21 @@ static void console_tcp_enable(uint16_t port)
     // (opcional) aumentar verbosidade:
     // esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
+    
+    esp_err_t ret;  
+    ret = modbus_master_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize Modbus Master: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+        // Iniciar a tarefa do Modbus Master
+    ret = modbus_master_start_task();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Modbus task: %s", esp_err_to_name(ret));
+        return;
+    }
+    
 }
 
 static void console_tcp_disable(void)

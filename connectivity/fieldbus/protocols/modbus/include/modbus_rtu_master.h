@@ -1,5 +1,12 @@
-#ifndef MODBUS_MASTER_H
-#define MODBUS_MASTER_H
+/*
+ * modbus_rtu_master.h
+ *
+ *  Created on: 3 de set. de 2025
+ *      Author: geopo
+ */
+
+#ifndef CONNECTIVITY_FIELDBUS_PROTOCOLS_MODBUS_INCLUDE_MODBUS_RTU_MASTER_H_
+#define CONNECTIVITY_FIELDBUS_PROTOCOLS_MODBUS_INCLUDE_MODBUS_RTU_MASTER_H_
 
 #include "esp_err.h"
 #include "mbcontroller.h"
@@ -21,8 +28,10 @@ typedef struct {
 } modbus_slave_t;
 
 // Funções públicas
-void start_modbus(void);
 esp_err_t modbus_master_init(void);
 esp_err_t modbus_master_start_task(void);
 
-#endif // MODBUS_MASTER_H
+
+
+
+#endif /* CONNECTIVITY_FIELDBUS_PROTOCOLS_MODBUS_INCLUDE_MODBUS_RTU_MASTER_H_ */
