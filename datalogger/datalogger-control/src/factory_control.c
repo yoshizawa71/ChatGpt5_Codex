@@ -555,7 +555,7 @@ static void console_tcp_enable(uint16_t port)
     logmux_init(NULL);
     // Pluga o writer do TCP e habilita duplicação
     logmux_set_tcp_writer(tcp_log_vprintf);
-    logmux_enable_uart(true);   // mantém serial ativa
+    logmux_enable_uart(false);   // mantém serial ativa
     logmux_enable_tcp(true);    // adiciona TCP -> DUPLICADO
     // (opcional) aumentar verbosidade:
     // esp_log_level_set("*", ESP_LOG_INFO);
