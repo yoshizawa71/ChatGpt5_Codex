@@ -5,6 +5,11 @@
 #include <string.h>
 #include "esp_check.h"
 
+/* Camada de HW RS485 — mantida.
+ * Útil caso você queira usar o backend RTU “cru” no futuro.
+ * O esp-modbus atual usa diretamente UARTx + RS485 half-duplex por UART API.
+ */
+
 static const char *TAG = "RS485_HW";
 static rs485_hw_cfg_t s_cfg;
 
@@ -46,7 +51,6 @@ esp_err_t rs485_hw_init(const rs485_hw_cfg_t *cfg)
     ESP_RETURN_ON_ERROR(gpio_config(&io), TAG, "gpio_config");
     gpio_set_level(cfg->de_re_gpio, 0); // RX por padrão
 
-    // Timeout de leitura em bytes-time (aqui via tempo absoluto de read)
     uart_flush(cfg->uart_num);
     return ESP_OK;
 }

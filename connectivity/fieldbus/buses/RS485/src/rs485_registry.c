@@ -1,40 +1,38 @@
 /*
- * 485_registry.c
- *
- *  Created on: 13 de ago. de 2025
- *      Author: geopo
- */
-/*
- * rs485_registry.c — Alinhado com as opções do front
+ * rs485_registry.c — Registro e dispatcher de sensores RS-485 (baixo acoplamento)
+ * - mapeia strings ⇄ enums (alinhado ao front)
+ * - leitura centralizada chamando drivers específicos
+ * - varredura de drivers (probe) para identificar o tipo a partir do endereço
  */
 
 #include "rs485_registry.h"
 
 #include <string.h>
 #include <ctype.h>
-#include "temperature_rs485.h"  // seu driver T/UR
+#include <stdio.h>
+#include <stdbool.h>
 
-// ===== Configuração: canal da umidade no mesmo canal do T? =====
-// 1 = mesmo canal (recomendado pelo seu fluxo atual)
-// 0 = usar canal+1 para UR
+#include "xy_md02_driver.h"              // temperature_rs485_probe/read  (XY-MD02)
+#include "energy_jsy_mk_333_driver.h"    // jsy_mk333_probe               (JSY-MK-333)
+
+/* Se um termo-higrômetro reportar UR, publicamos no mesmo canal do T */
 #define TH_HUM_SAME_CHANNEL 1
 
-// -------- utils --------
+/* ---------------- utils ---------------- */
 static bool streq(const char *a, const char *b) { return a && b && strcmp(a, b) == 0; }
 static bool streq_ci(const char *a, const char *b) {
     if (!a || !b) return false;
     while (*a && *b) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        if ((unsigned char)tolower(*a) != (unsigned char)tolower(*b)) return false;
         ++a; ++b;
     }
     return *a == *b;
 }
 
-// -------- string -> enum --------
+/* ---------------- string -> enum ---------------- */
 rs485_type_t rs485_type_from_str(const char *s) {
     if (!s || !*s) return RS485_TYPE_INVALID;
 
-    // valores do front (e sinônimos/acentos)
     if (streq_ci(s, "energia"))             return RS485_TYPE_ENERGIA;
 
     if (streq_ci(s, "termohigrometro") ||
@@ -45,26 +43,25 @@ rs485_type_t rs485_type_from_str(const char *s) {
     if (streq_ci(s, "temperatura"))         return RS485_TYPE_TEMPERATURA;
     if (streq_ci(s, "umidade"))             return RS485_TYPE_UMIDADE;
 
-    if (streq_ci(s, "pressao") ||
-        streq_ci(s, "pressão"))             return RS485_TYPE_PRESSAO;
+    if (streq_ci(s, "pressao") || streq_ci(s, "pressão"))
+                                            return RS485_TYPE_PRESSAO;
 
-    if (streq_ci(s, "vazao")   ||
-        streq_ci(s, "vazão")   ||
-        streq_ci(s, "fluxo"))               return RS485_TYPE_FLUXO;
+    if (streq_ci(s, "vazao")   || streq_ci(s, "vazão") || streq_ci(s, "fluxo"))
+                                            return RS485_TYPE_FLUXO;
 
-    if (streq_ci(s, "gps"))                  return RS485_TYPE_GPS;
-    if (streq_ci(s, "luz"))                  return RS485_TYPE_LUZ;
+    if (streq_ci(s, "gps"))                 return RS485_TYPE_GPS;
+    if (streq_ci(s, "luz"))                 return RS485_TYPE_LUZ;
 
-    if (streq_ci(s, "gas") ||
-        streq_ci(s, "gás"))                  return RS485_TYPE_GAS;
+    if (streq_ci(s, "gas") || streq_ci(s, "gás"))
+                                            return RS485_TYPE_GAS;
 
-    if (streq_ci(s, "outro") ||
-        streq_ci(s, "outros"))               return RS485_TYPE_OUTRO;
+    if (streq_ci(s, "outro") || streq_ci(s, "outros"))
+                                            return RS485_TYPE_OUTRO;
 
     return RS485_TYPE_INVALID;
 }
 
-// Canoniza para os nomes do **front**
+/* Canoniza p/ nomes do front */
 const char* rs485_type_to_str(rs485_type_t t) {
     switch (t) {
         case RS485_TYPE_ENERGIA:     return "energia";
@@ -72,7 +69,7 @@ const char* rs485_type_to_str(rs485_type_t t) {
         case RS485_TYPE_TEMPERATURA: return "temperatura";
         case RS485_TYPE_UMIDADE:     return "umidade";
         case RS485_TYPE_PRESSAO:     return "pressao";
-        case RS485_TYPE_FLUXO:       return "vazao";         // front usa "vazao"
+        case RS485_TYPE_FLUXO:       return "vazao";
         case RS485_TYPE_GPS:         return "gps";
         case RS485_TYPE_LUZ:         return "luz";
         case RS485_TYPE_GAS:         return "gas";
@@ -96,12 +93,9 @@ const char* rs485_subtype_to_str(rs485_subtype_t st) {
     }
 }
 
-// -------- Dispatcher de leitura --------
-// IMPORTANTE: para T/UR usamos o seu driver "temperature_rs485.h".
-// Assinatura esperada (ajuste se seu header for diferente):
-//   int temperature_rs485_read(uint8_t addr, float *temp_c, float *hum_pct, bool *has_hum);
-//
-// Retorno: >=0 quantidade de medições escritas; <0 erro.
+/* --------------- Dispatcher de leitura ---------------
+ * Retorna >=0 (# medições escritas em out) ou <0 em erro.
+ */
 int rs485_read_measurements(const rs485_sensor_t *sensor,
                             rs485_measurement_t *out, size_t out_len)
 {
@@ -115,6 +109,7 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
             float t_c = 0.0f, rh = 0.0f;
             bool  has_hum = false;
 
+            /* Driver XY-MD02: lê T (e UR se houver) do endereço informado */
             int r = temperature_rs485_read((uint8_t)sensor->address, &t_c, &rh, &has_hum);
             if (r < 0) return r;
 
@@ -134,13 +129,13 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
                 if (wr < (int)out_len) {
 #if TH_HUM_SAME_CHANNEL
                     out[wr++] = (rs485_measurement_t){
-                        .channel = sensor->channel,     // mesmo canal (alinhado ao seu pedido)
+                        .channel = sensor->channel,
                         .kind    = RS485_MEAS_HUM_PCT,
                         .value   = rh
                     };
 #else
                     out[wr++] = (rs485_measurement_t){
-                        .channel = (uint16_t)(sensor->channel + 1), // alternativa canal vizinho
+                        .channel = (uint16_t)(sensor->channel + 1),
                         .kind    = RS485_MEAS_HUM_PCT,
                         .value   = rh
                     };
@@ -148,37 +143,34 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
                 }
             }
 
-            // Se pediram "umidade" e o sensor NÃO reporta UR:
             if (sensor->type == RS485_TYPE_UMIDADE && !has_hum) return -4;
 
             return wr;
         }
 
         case RS485_TYPE_ENERGIA:
-            // TODO: chamar driver de energia (mono/tri por subtype)
+            /* Quando o driver de energia estiver pronto, despachar aqui
+               (ex.: jsy_mk333_read_basic + conversão p/ measurements). */
             return -2;
 
         case RS485_TYPE_FLUXO:
-            // TODO: chamar driver de vazão/fluxo
             return -2;
 
         case RS485_TYPE_PRESSAO:
-            // TODO: chamar driver de pressão
             return -2;
 
         case RS485_TYPE_GPS:
         case RS485_TYPE_LUZ:
         case RS485_TYPE_GAS:
-            // TODO: implementar quando drivers estiverem prontos
             return -2;
 
         case RS485_TYPE_OUTRO:
         default:
-            return -3; // tipo não suportado (ainda)
+            return -3; // tipo ainda não suportado
     }
 }
 
-// Varredura simples
+/* --------------- Varredura simples da lista --------------- */
 int rs485_poll_all(const rs485_sensor_t *list, size_t count,
                    rs485_measurement_t *out, size_t out_len)
 {
@@ -188,7 +180,50 @@ int rs485_poll_all(const rs485_sensor_t *list, size_t count,
         if (wr >= out_len) break;
         int n = rs485_read_measurements(&list[i], &out[wr], out_len - wr);
         if (n > 0) wr += (size_t)n;
-        // n <= 0 => sem leitura/erro: pode logar/contabilizar aqui
     }
     return (int)wr;
+}
+
+/* --------------- NOVO: Varredura de drivers em um endereço ---------------
+ * Tenta identificar o equipamento instalado no endereço `addr`.
+ * Retorna true se algum driver reconheceu; preenche out_* com a identificação.
+ *
+ * OBS: mantive parâmetros “simples” (sem struct) para você poder
+ * chamar sem precisar alterar o header imediatamente (basta um extern).
+ */
+bool rs485_registry_probe_any(uint8_t addr,
+                              rs485_type_t *out_type,
+                              rs485_subtype_t *out_subtype,
+                              uint8_t *out_used_fc,
+                              const char **out_driver_name)
+{
+    if (out_type)      *out_type      = RS485_TYPE_INVALID;
+    if (out_subtype)   *out_subtype   = RS485_SUBTYPE_NONE;
+    if (out_used_fc)   *out_used_fc   = 0;
+    if (out_driver_name) *out_driver_name = NULL;
+
+    /* 1) XY-MD02 (Termo/UR) */
+    uint8_t fc = 0;
+    if (temperature_rs485_probe(addr, &fc) > 0) {              /* XY probe */  /* :contentReference[oaicite:1]{index=1} */
+        if (out_type)      *out_type = RS485_TYPE_TERMOHIGRO;
+        if (out_subtype)   *out_subtype = RS485_SUBTYPE_NONE;
+        if (out_used_fc)   *out_used_fc = fc;
+        if (out_driver_name) *out_driver_name = "XY_MD02";
+        return true;
+    }
+
+    /* 2) JSY-MK-333 (Energia) — usa um “mapa” default até você ajustar */
+    jsy_map_t map = jsy_mk333_default_map();
+    fc = 0;
+    if (jsy_mk333_probe(addr, &map, &fc) == 0) {               /* JSY probe */ /* :contentReference[oaicite:2]{index=2} */
+        if (out_type)      *out_type = RS485_TYPE_ENERGIA;
+        if (out_subtype)   *out_subtype = RS485_SUBTYPE_MONOFASICO; // placeholder
+        if (out_used_fc)   *out_used_fc = fc;
+        if (out_driver_name) *out_driver_name = "JSY_MK_333";
+        return true;
+    }
+
+    /* Acrescente aqui outros probes de drivers futuros */
+
+    return false; // nenhum driver reconheceu
 }

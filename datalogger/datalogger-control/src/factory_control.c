@@ -37,6 +37,8 @@
 #include "system.h"
 #include "TCA6408A.h"
 
+#include "rs485_registry.h"
+#include "xy_md02_driver.h"
 
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
@@ -569,11 +571,28 @@ static void console_tcp_enable(uint16_t port)
         return;
     }
     
-        // Iniciar a tarefa do Modbus Master
-    ret = modbus_master_start_task();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start Modbus task: %s", esp_err_to_name(ret));
-        return;
+    // ---- TESTE 1: probe via registry (tenta drivers conhecidos antes de ping genérico)
+    uint8_t addr = 1; // ajuste para o endereço que você está usando
+    rs485_type_t t; rs485_subtype_t st; uint8_t fc = 0; const char *drv = NULL;
+    if (rs485_registry_probe_any(addr, &t, &st, &fc, &drv)) {
+        ESP_LOGI("PING", "Detectado driver=%s type=%s fc=0x%02X",
+                 drv, rs485_type_to_str(t), fc);
+        // ---- TESTE 2 (opcional): leitura única no XY_MD02
+        if (t == RS485_TYPE_TERMOHIGRO || t == RS485_TYPE_TEMPERATURA || t == RS485_TYPE_UMIDADE) {
+            float tc=0, rh=0; bool has_hum=false;
+            if (temperature_rs485_read(addr, &tc, &rh, &has_hum) >= 0) {
+                if (has_hum) ESP_LOGI("XYMD02", "Temp: %.1f C  RH: %.1f %%", tc, rh);
+                else         ESP_LOGI("XYMD02", "Temp: %.1f C", tc);
+            } else {
+                ESP_LOGW("XYMD02", "Falha na leitura pontual");
+            }
+        }
+    } else {
+        // ---- Fallback: ping genérico (FC04@0x0001 → FC03@0x0000)
+        bool alive=false; uint8_t used_fc=0;
+        ret = modbus_master_ping(addr, &alive, &used_fc);
+        ESP_LOGI("PING", "addr=%u alive=%d fc=0x%02X err=%s",
+                 addr, alive, used_fc, esp_err_to_name(ret));
     }
     
 }

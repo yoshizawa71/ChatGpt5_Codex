@@ -15,7 +15,8 @@ extern "C" {
 #endif
 // “Gerência” mínima: apenas um ping “genérico”
 // (lista/flash fica no seu módulo de config já existente)
-esp_err_t rs485_manager_ping(uint8_t addr, TickType_t tmo);
+bool rs485_manager_ping(uint8_t addr, TickType_t timeout,
+                        uint8_t *used_fc, bool *exception);
 
 #ifdef __cplusplus
 }

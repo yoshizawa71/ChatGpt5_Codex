@@ -12,8 +12,9 @@ idf_component_register(SRCS "${srcs}"
                              lwip
                              espressif__esp-modbus
                              nvs_flash
-                             termohigrometro
                              modbus
+                             XY_MD02
+                             JSY-MK-333
                              )
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 
