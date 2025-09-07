@@ -64,15 +64,27 @@ static inline esp_err_t mb_send_locked(mb_param_request_t *req,
 }
 
 /* =================== Inicialização do Master RTU =================== */
+// em modbus_rtu_master.c — SUBSTITUA a função inteira
 esp_err_t modbus_master_init(void)
 {
+    // ✅ idempotência: se já inicializado, sai cedo
+    if (s_master_ready) {
+        ESP_LOGI(TAG, "Master RTU já inicializado (noop).");
+        return ESP_OK;
+    }
+    if (s_master_handler != NULL) {        // se, por algum motivo, já tiver handler
+        s_master_ready = true;
+        ESP_LOGI(TAG, "Master RTU já possui handler (noop).");
+        return ESP_OK;
+    }
+
     mb_communication_info_t comm = {
         .port     = MB_PORT_NUM,
-#ifdef CONFIG_MB_COMM_MODE_ASCII
+    #ifdef CONFIG_MB_COMM_MODE_ASCII
         .mode     = MB_MODE_ASCII,
-#else
+    #else
         .mode     = MB_MODE_RTU,
-#endif
+    #endif
         .baudrate = MB_DEV_SPEED,
         .parity   = MB_PARITY_NONE
     };
@@ -80,10 +92,7 @@ esp_err_t modbus_master_init(void)
     ESP_LOGI(TAG, "Init Master RTU: UART%d, %d bps, mode=%s",
              MB_PORT_NUM, MB_DEV_SPEED, (comm.mode == MB_MODE_RTU ? "RTU" : "ASCII"));
 
-    s_master_handler = NULL;
-    esp_err_t err;
-
-    err = mbc_master_init(MB_PORT_SERIAL_MASTER, &s_master_handler);
+    esp_err_t err = mbc_master_init(MB_PORT_SERIAL_MASTER, &s_master_handler);
     if (err != ESP_OK || s_master_handler == NULL) {
         ESP_LOGE(TAG, "mbc_master_init() fail: %s (handler=%p)", esp_err_to_name(err), s_master_handler);
         return (err == ESP_OK) ? ESP_ERR_INVALID_STATE : err;
@@ -95,7 +104,7 @@ esp_err_t modbus_master_init(void)
         return err;
     }
 
-    /* Ajuste fino no RX timeout (caracteres) para melhorar latência em 9600 bps */
+    // Ajustes UART/RS485
     err = uart_set_rx_timeout(MB_PORT_NUM, 1);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "uart_set_rx_timeout() fail: %s", esp_err_to_name(err));
@@ -136,6 +145,7 @@ esp_err_t modbus_master_init(void)
     ESP_LOGI(TAG, "Master RTU inicializado e pronto.");
     return ESP_OK;
 }
+
 
 /* =================== Tarefa leitora interna (DESABILITADA) ===================
  * Para manter o módulo 100% desacoplado de "slaves", não criamos nenhuma task aqui.

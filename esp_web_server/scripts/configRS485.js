@@ -5,6 +5,9 @@
 const RS485_MAX_SENSORS = 10;
 const CHANNEL_OPTIONS = [3,4,5,6,7,8,9,10,11,12]; // canais válidos
 
+// Forma do LED no status: 'circle' (padrão) ou 'square'
+const LED_SHAPE = 'square';
+
 // ===== Estado =====
 const sensorMap = []; // { channel, address, type, subtype }
 
@@ -34,30 +37,54 @@ function refreshChannelOptions() {
   });
 }
 
-/** Cria/atualiza a lista visual com status (● conectado/desconectado) */
+/** Chama backend para excluir um sensor persistido */
+async function deleteSensorBackend(ch, addr) {
+  const url = `/rs485ConfigDelete?channel=${encodeURIComponent(ch)}&address=${encodeURIComponent(addr)}`;
+  const res = await fetch(url, { method: 'GET' });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j || j.ok !== true) {
+    const msg = (j && (j.error || j.msg)) ? String(j.error || j.msg) : 'Falha ao excluir no backend.';
+    throw new Error(msg);
+  }
+  return j; // { ok:true, removed, remaining }
+}
+
+/** Cria/atualiza a lista visual com status (LED conectado/desconectado) */
 function updateSensorStatusList() {
   const $list = $('#sensorStatusList').empty();
   sensorMap
     .sort((a,b)=>a.channel-b.channel)
-    .forEach((s, idx) => {
+    .forEach((s) => {
       const desc = `Canal ${s.channel} – Endereço ${s.address} – ${s.type}${s.subtype ? ' ('+s.subtype+')' : ''}`;
 
       const $line = $('<div class="sensor-line">');
       const $desc = $('<span class="sensor-desc">').text(desc);
-      const $icon = $('<span class="status-icon disconnected">').text('●');
+
+      // LED estilizado por CSS (maior, azul vivo, com glow quando conectado)
+      const $icon = $(`<span class="status-icon led ${LED_SHAPE} disconnected" aria-label="status"></span>`);
+
       const $remove = $('<button type="button" class="rm-btn">Remover</button>')
-        .on('click', () => {
-          // remove do array
-          const i = sensorMap.findIndex(x => x.channel === s.channel && x.address === s.address);
-          if (i >= 0) sensorMap.splice(i,1);
-          refreshChannelOptions();
-          updateSensorStatusList();
+        .on('click', async () => {
+          if (!confirm(`Remover o sensor do Canal ${s.channel}, Endereço ${s.address}?`)) return;
+
+          $remove.prop('disabled', true).text('Removendo...');
+          try {
+            await deleteSensorBackend(s.channel, s.address);
+            // remove local e atualiza UI
+            const i = sensorMap.findIndex(x => x.channel === s.channel && x.address === s.address);
+            if (i >= 0) sensorMap.splice(i, 1);
+            refreshChannelOptions();
+            updateSensorStatusList();
+          } catch (e) {
+            alert(e && e.message ? e.message : 'Falha ao remover.');
+            $remove.prop('disabled', false).text('Remover');
+          }
         });
 
       $line.append($desc, $('<span>').append($icon, ' ', $remove));
       $list.append($line);
 
-      // Faz ping para colorir o status
+      // Faz ping para colorir o status (conectado = LED azul vivo)
       $.getJSON(`/rs485Ping?channel=${s.channel}&address=${s.address}`)
         .done(res => {
           $icon
@@ -65,15 +92,14 @@ function updateSensorStatusList() {
             .addClass(res && res.alive ? 'connected' : 'disconnected');
         })
         .fail(() => {
-          $icon
-            .removeClass('connected')
-            .addClass('disconnected');
+          $icon.removeClass('connected').addClass('disconnected');
         });
     });
 }
 
-/** Adiciona o sensor da linha de entrada à lista/array */
-function addSensorFromInputs() {
+/** Adiciona o sensor da linha de entrada à lista/array
+ *  -> mantém seu fluxo atual: valida+registra no backend antes de inserir localmente */
+async function addSensorFromInputs() {
   if (sensorMap.length >= RS485_MAX_SENSORS) {
     alert(`Limite de ${RS485_MAX_SENSORS} sensores atingido.`);
     return;
@@ -90,18 +116,34 @@ function addSensorFromInputs() {
   if (!type) { alert('Selecione o tipo de sensor.'); return; }
   if (type !== 'energia') { $('#subtype_input').val(''); } // limpa se não é energia
 
-  // duplicidade
-  if (sensorMap.some(s => s.channel === ch)) {
-    alert('Canal já utilizado.'); return;
-  }
-  if (sensorMap.some(s => s.address === addr)) {
-    alert('Endereço já utilizado.'); return;
+  // duplicidades locais
+  if (sensorMap.some(s => s.channel === ch))  { alert('Canal já utilizado.');   return; }
+  if (sensorMap.some(s => s.address === addr)) { alert('Endereço já utilizado.'); return; }
+
+  // Verificação + registro no backend (conforme seu fluxo atual)
+  let ok = false, errMsg = '';
+  try {
+    const res = await fetch('/rs485Register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: ch, address: addr, type, subtype })
+    });
+    const j = await res.json().catch(() => ({}));
+    ok = !!(res.ok && j && j.ok === true);
+    errMsg = (j && j.error) ? String(j.error) : '';
+  } catch (e) {
+    errMsg = 'Falha de comunicação com o backend (/rs485Register).';
   }
 
-  // adiciona
+  if (!ok) {
+    alert(errMsg || 'Não foi possível verificar/registrar o dispositivo.\n' +
+                    'Possíveis causas: não plugado, driver incompatível, função Modbus incorreta.');
+    return; // não registra localmente
+  }
+
+  // Sucesso: registra local e atualiza UI; LED será atualizado pelo ping
   sensorMap.push({ channel: ch, address: addr, type, subtype });
 
-  // atualiza UI
   refreshChannelOptions();
   updateSensorStatusList();
 
@@ -127,10 +169,9 @@ $(document).ready(function() {
   });
 
   // Botão "Adicionar Sensor"
-  $('#addSensor').on('click', addSensorFromInputs);
+  $('#addSensor').on('click', (ev) => { ev.preventDefault(); addSensorFromInputs(); });
 
-  // (Opcional) Carrega configuração salva para preencher a lista ao abrir a página
-  // Se você criou os endpoints separados /rs485ConfigGet:
+  // Carrega configuração salva para preencher a lista ao abrir a página
   $.getJSON('/rs485ConfigGet')
     .done(data => {
       if (data && Array.isArray(data.sensors)) {

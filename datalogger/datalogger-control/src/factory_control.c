@@ -39,6 +39,7 @@
 
 #include "rs485_registry.h"
 #include "xy_md02_driver.h"
+#include "rs485_manager.h"
 
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
@@ -113,6 +114,7 @@ static esp_err_t ping_handler(httpd_req_t *req);
 static esp_err_t rs485_config_get_handler(httpd_req_t *req);
 static esp_err_t rs485_config_post_handler(httpd_req_t *req);
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req);
+static esp_err_t rs485_config_delete_handler(httpd_req_t *req);
 
 //------------------------------------------------------------------
 
@@ -461,6 +463,17 @@ httpd_register_uri_handler(server, &rele_post_uri);
         .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &rs485_config_post_uri);
+    
+    
+    // ---------------- RS485 REGISTER (POST) -> usa o MESMO handler do ConfigSave ----------------
+httpd_uri_t rs485_register_post_uri = {
+    .uri      = "/rs485Register",
+    .method   = HTTP_POST,
+    .handler  = rs485_config_post_handler,  // handler unificado
+    .user_ctx = rest_context
+};
+httpd_register_uri_handler(server, &rs485_register_post_uri);
+
 
 // ---------------- RS485 PING (GET) ----------------
     httpd_uri_t rs485_ping_get_uri = {
@@ -470,6 +483,16 @@ httpd_register_uri_handler(server, &rele_post_uri);
         .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &rs485_ping_get_uri);
+    
+    
+    // ---------------- RS485 CONFIG DELETE (GET) ----------------
+httpd_uri_t rs485_cfg_delete_uri = {
+    .uri      = "/rs485ConfigDelete",
+    .method   = HTTP_GET,
+    .handler  = rs485_config_delete_handler,
+    .user_ctx = rest_context
+};
+httpd_register_uri_handler(server, &rs485_cfg_delete_uri);
   
 //----------------------------------------------------------
 //           Delete the file
@@ -564,7 +587,7 @@ static void console_tcp_enable(uint16_t port)
     // esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
     
-    esp_err_t ret;  
+/*    esp_err_t ret;  
     ret = modbus_master_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize Modbus Master: %s", esp_err_to_name(ret));
@@ -593,7 +616,7 @@ static void console_tcp_enable(uint16_t port)
         ret = modbus_master_ping(addr, &alive, &used_fc);
         ESP_LOGI("PING", "addr=%u alive=%d fc=0x%02X err=%s",
                  addr, alive, used_fc, esp_err_to_name(ret));
-    }
+    }*/
     
 }
 
@@ -1010,83 +1033,199 @@ static esp_err_t rs485_config_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// POST /rs485ConfigSave  -> recebe JSON { "sensors":[{channel,address,type,subtype},...] }
-// - Salva channel/address no binário oficial (usado pelo firmware);
-// - Salva o JSON completo (com type/subtype) em RS485_MAP_UI_PATH para o front.
+// ===== handler: POST /rs485ConfigSave e /rs485Register (aceita item único ou array) =====
 static esp_err_t rs485_config_post_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
-    rest_server_context_t *ctx = (rest_server_context_t *) req->user_ctx;
-    int total = req->content_len;
-    if (total <= 0 || total >= SCRATCH_BUFSIZE) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"bad_size\"}");
-        return ESP_OK;
+    // --- Lê corpo da requisição ---
+    char buf[256];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body missing");
+        return ESP_FAIL;
     }
+    buf[len] = '\0';
 
-    int got = 0;
-    while (got < total) {
-        int r = httpd_req_recv(req, ctx->scratch + got, total - got);
-        if (r <= 0) {
-            httpd_resp_set_status(req, "400 Bad Request");
-            httpd_resp_sendstr(req, "{\"error\":\"recv\"}");
-            return ESP_OK;
-        }
-        got += r;
-    }
-    ctx->scratch[total] = '\0';
-
-    cJSON *root = cJSON_Parse(ctx->scratch);
+    // --- Parse JSON ---
+    cJSON *root = cJSON_Parse(buf);
     if (!root) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"json_parse\"}");
-        return ESP_OK;
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_FAIL;
     }
+
+    // Aceita {"sensors":[...]} OU item único {"channel":...,"address":...,"type":...,"subtype":...}
     cJSON *arr = cJSON_GetObjectItem(root, "sensors");
     if (!cJSON_IsArray(arr)) {
-        cJSON_Delete(root);
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"sensors_array_missing\"}");
-        return ESP_OK;
+        cJSON *jc = cJSON_GetObjectItem(root, "channel");
+        cJSON *ja = cJSON_GetObjectItem(root, "address");
+        if (cJSON_IsNumber(jc) && cJSON_IsNumber(ja)) {
+            // embrulha o item único como array para reaproveitar fluxo
+            cJSON *wrap = cJSON_CreateObject();
+            cJSON *list = cJSON_CreateArray();
+            cJSON_AddItemToArray(list, root);             // move root
+            cJSON_AddItemToObject(wrap, "sensors", list);
+            root = wrap;
+            arr  = list;
+        } else {
+            cJSON_Delete(root);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"sensors_array_or_single_missing\"}");
+            return ESP_OK;
+        }
     }
 
-    // Monta vetor p/ persistência binária (channel/address)
+    // Carrega a config atual para fazermos "upsert"
     sensor_map_t map[RS485_MAX_SENSORS] = {0};
     size_t count = 0;
+    (void) load_rs485_config(map, &count);  // OK se vazio
 
-    cJSON *it = NULL;
-    cJSON_ArrayForEach(it, arr) {
-        if (count >= RS485_MAX_SENSORS) break;
-        cJSON *jc = cJSON_GetObjectItem(it, "channel");
-        cJSON *ja = cJSON_GetObjectItem(it, "address");
-        if (!cJSON_IsNumber(jc) || !cJSON_IsNumber(ja)) continue;
-
-        map[count].channel = (uint8_t) jc->valuedouble;
-        map[count].address = (uint8_t) ja->valuedouble;
-        count++;
-    }
-
-    // 1) salva o binário oficial usado pelo firmware  :contentReference[oaicite:5]{index=5}
-    save_rs485_config(map, count);
-
-    // 2) salva o JSON completo para o front (preserva type/subtype)
-    FILE *fj = fopen(RS485_MAP_UI_PATH, "wb");
-    if (fj) {
-        // opcional: re-serializar para padronizar
-        char *compacted = cJSON_PrintUnformatted(root);
-        if (compacted) {
-            fwrite(compacted, 1, strlen(compacted), fj);
-            free(compacted);
+    // Também vamos manter/atualizar o JSON do front
+    // Estrutura: { "sensors": [ {channel, address, type, subtype, ...} ] }
+    cJSON *ui_root = NULL;
+    cJSON *ui_arr  = NULL;
+    {
+        FILE *fj = fopen(RS485_MAP_UI_PATH, "rb");
+        if (fj) {
+            fseek(fj, 0, SEEK_END);
+            long sz = ftell(fj);
+            rewind(fj);
+            if (sz > 0 && sz < 8192) {
+                char *jbuf = (char*)malloc((size_t)sz + 1);
+                if (jbuf) {
+                    size_t n = fread(jbuf, 1, (size_t)sz, fj);
+                    jbuf[n] = '\0';
+                    ui_root = cJSON_Parse(jbuf);
+                    free(jbuf);
+                }
+            }
+            fclose(fj);
         }
-        fclose(fj);
+        if (!ui_root) ui_root = cJSON_CreateObject();
+        ui_arr = cJSON_GetObjectItem(ui_root, "sensors");
+        if (!cJSON_IsArray(ui_arr)) {
+            ui_arr = cJSON_CreateArray();
+            cJSON_AddItemToObject(ui_root, "sensors", ui_arr);
+        }
     }
 
+    // --- Itera itens recebidos e faz upsert + valida ping curto ---
+    for (cJSON *it = arr->child; it; it = it->next) {
+        cJSON *jch = cJSON_GetObjectItem(it, "channel");
+        cJSON *jaddr = cJSON_GetObjectItem(it, "address");
+        cJSON *jtype = cJSON_GetObjectItem(it, "type");
+        cJSON *jsub  = cJSON_GetObjectItem(it, "subtype");
+
+        if (!cJSON_IsNumber(jch) || !cJSON_IsNumber(jaddr) || !cJSON_IsString(jtype)) {
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing fields");
+            return ESP_FAIL;
+        }
+
+        int ch = jch->valueint;
+        int addr = jaddr->valueint;
+        const char *ty = jtype->valuestring;
+        const char *st = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
+
+        // --- Ping curto para validar slave ---
+        uint8_t used_fc = 0;
+        bool exception = false; // <== corrige tipo
+        bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(150), &used_fc, &exception);
+        if (!alive) {
+            // responde falha (o front mostra msg e não acende o LED)
+            cJSON *resp = cJSON_CreateObject();
+            cJSON_AddBoolToObject(resp, "ok", false);
+            cJSON_AddStringToObject(resp, "msg", "dispositivo não respondeu");
+            char *out = cJSON_PrintUnformatted(resp);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, out ? out : "{\"ok\":false}");
+            free(out);
+            cJSON_Delete(resp);
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            return ESP_OK;
+        }
+        cJSON_AddNumberToObject(it, "used_fc", used_fc);
+
+        // --- Upsert no binário (replace se já existir, senão append) ---
+        sensor_map_t cand = {0};
+        cand.channel = (uint8_t)ch;
+        cand.address = (uint8_t)addr;
+        strncpy(cand.type, ty, sizeof(cand.type) - 1);
+        strncpy(cand.subtype, st, sizeof(cand.subtype) - 1);
+
+        bool replaced = false;
+        for (size_t i = 0; i < count; ++i) {
+            if (map[i].channel == cand.channel && map[i].address == cand.address) {
+                map[i] = cand;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            if (count >= RS485_MAX_SENSORS) {
+                cJSON_Delete(root);
+                cJSON_Delete(ui_root);
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "max sensors");
+                return ESP_FAIL;
+            }
+            map[count++] = cand;
+        }
+
+        // --- Upsert também no JSON do front (RS485_MAP_UI_PATH) ---
+        bool ui_replaced = false;
+        for (cJSON *jt = ui_arr->child; jt; jt = jt->next) {
+            cJSON *uch = cJSON_GetObjectItem(jt, "channel");
+            cJSON *uad = cJSON_GetObjectItem(jt, "address");
+            if (cJSON_IsNumber(uch) && cJSON_IsNumber(uad) &&
+                uch->valueint == ch && uad->valueint == addr)
+            {
+                // Atualiza type/subtype
+                cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(ty));
+                cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(st));
+                ui_replaced = true;
+                break;
+            }
+        }
+        if (!ui_replaced) {
+            cJSON *newit = cJSON_CreateObject();
+            cJSON_AddNumberToObject(newit, "channel", ch);
+            cJSON_AddNumberToObject(newit, "address", addr);
+            cJSON_AddStringToObject(newit, "type", ty);
+            cJSON_AddStringToObject(newit, "subtype", st);
+            cJSON_AddItemToArray(ui_arr, newit);
+        }
+    }
+
+    // Persiste binário consolidado
+    esp_err_t ret = save_rs485_config(map, count);
+    if (ret != ESP_OK) {
+        cJSON_Delete(root);
+        cJSON_Delete(ui_root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
+        return ret;
+    }
+
+    // Persiste JSON do front
+    char *ui_json = cJSON_PrintUnformatted(ui_root);
+    if (ui_json) {
+        FILE *fw = fopen(RS485_MAP_UI_PATH, "wb");
+        if (fw) {
+            fwrite(ui_json, 1, strlen(ui_json), fw);
+            fclose(fw);
+        }
+        free(ui_json);
+    }
+    cJSON_Delete(ui_root);
+
+    // Sucesso
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
+
 
 
 // ========================================================
@@ -1098,37 +1237,178 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
-    // Parseia query (opcional, só para logar/validar)
-    char buf[64];
-    int qlen = httpd_req_get_url_query_len(req) + 1;
+    // --- Parse de query: channel e address (address é o que importa para o barramento)
+    char qbuf[64], param[16];
     int ch = 0, addr = 0;
-
-    if (qlen > 1 && qlen < sizeof(buf)) {
-        if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-            char param[16];
-            if (httpd_query_key_value(buf, "channel", param, sizeof(param)) == ESP_OK) {
-                ch = atoi(param);
-            }
-            if (httpd_query_key_value(buf, "address", param, sizeof(param)) == ESP_OK) {
-                addr = atoi(param);
-            }
+    int qlen = httpd_req_get_url_query_len(req) + 1;
+    if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
+        if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) ch = atoi(param);
+            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK) addr = atoi(param);
         }
     }
+    if (addr <= 0 || addr > 247) {  // faixa válida Modbus RTU
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"error\":\"invalid_address\"}");
+        return ESP_OK;
+    }
 
-    // TODO: integrar com seu gerenciador RS485 e responder o real status
-    // bool alive = rs485_ping((uint8_t)ch, (uint8_t)addr);
+    // --- Lazy init do Modbus Master (idempotente)
+    esp_err_t ret = modbus_master_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Modbus init failed: %s", esp_err_to_name(ret));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"error\":\"modbus_init\"}");
+        return ESP_OK;
+    }
+
+    // --- Tenta identificar via DRIVERS (registry) primeiro
+    rs485_type_t t = RS485_TYPE_INVALID;
+    rs485_subtype_t st = RS485_SUBTYPE_NONE;
+    uint8_t used_fc = 0;
+    const char *drv = NULL;
+
     bool alive = false;
+    bool matched = rs485_registry_probe_any((uint8_t)addr, &t, &st, &used_fc, &drv);
+    if (matched) {
+        alive = true;
+        ESP_LOGI("RS485_PING", "det: addr=%d driver=%s type=%s st=%s fc=0x%02X",
+                 addr, drv ? drv : "", rs485_type_to_str(t), rs485_subtype_to_str(st), used_fc);
+    } else {
+        // --- Fallback: ping genérico (FC04@0x0001 -> FC03@0x0000)
+        bool ping_alive = false; uint8_t ping_fc = 0;
+        ret = modbus_master_ping((uint8_t)addr, &ping_alive, &ping_fc);
+        alive = (ret == ESP_OK) && ping_alive;
+        used_fc = alive ? ping_fc : 0x00;
+        ESP_LOGI("RS485_PING", "gen: addr=%d alive=%d fc=0x%02X err=%s",
+                 addr, (int)alive, used_fc, esp_err_to_name(ret));
+    }
 
+    // --- Monta resposta JSON
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "alive", alive);
+    cJSON_AddNumberToObject(root, "used_fc", used_fc);
+    cJSON_AddStringToObject(root, "type",   alive && matched ? rs485_type_to_str(t)       : "");
+    cJSON_AddStringToObject(root, "subtype",alive && matched ? rs485_subtype_to_str(st)   : "");
+    cJSON_AddStringToObject(root, "driver", alive && matched && drv ? drv : "");
+    cJSON_AddBoolToObject(root, "exception", false);
+
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
 
-    if (json) free(json);
+    free(json);
     cJSON_Delete(root);
     return ESP_OK;
 }
+
+// ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====
+static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    // --- Parse de query ---
+    char qbuf[64], param[16];
+    int ch = -1, addr = -1;
+    int qlen = httpd_req_get_url_query_len(req) + 1;
+    if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
+        if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) ch = atoi(param);
+            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK) addr = atoi(param);
+        }
+    }
+    if (ch < 0 || addr <= 0 || addr > 247) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing_or_invalid_params\"}");
+        return ESP_OK;
+    }
+
+    // --- Carrega binário e filtra fora o alvo ---
+    sensor_map_t map[RS485_MAX_SENSORS] = {0};
+    size_t count = 0;
+    (void) load_rs485_config(map, &count);
+
+    sensor_map_t out[RS485_MAX_SENSORS] = {0};
+    size_t wr = 0, removed = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (map[i].channel == (uint8_t)ch && map[i].address == (uint8_t)addr) {
+            removed++;
+            continue; // pula (remove)
+        }
+        out[wr++] = map[i];
+    }
+
+    esp_err_t ret = save_rs485_config(out, wr);
+    if (ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save_failed");
+        return ret;
+    }
+
+    // --- Atualiza o JSON do front (se existir) removendo o item ---
+    FILE *fj = fopen(RS485_MAP_UI_PATH, "rb");
+    cJSON *ui_root = NULL, *ui_arr = NULL;
+    if (fj) {
+        fseek(fj, 0, SEEK_END);
+        long sz = ftell(fj);
+        rewind(fj);
+        if (sz > 0 && sz < 8192) {
+            char *buf = (char*)malloc((size_t)sz + 1);
+            if (buf) {
+                size_t n = fread(buf, 1, (size_t)sz, fj);
+                buf[n] = '\0';
+                ui_root = cJSON_Parse(buf);
+                free(buf);
+            }
+        }
+        fclose(fj);
+    }
+    if (!ui_root) ui_root = cJSON_CreateObject();
+    ui_arr = cJSON_GetObjectItem(ui_root, "sensors");
+    if (!cJSON_IsArray(ui_arr)) {
+        ui_arr = cJSON_CreateArray();
+        cJSON_AddItemToObject(ui_root, "sensors", ui_arr);
+    }
+
+    // reconstroi o array sem o alvo
+    cJSON *new_arr = cJSON_CreateArray();
+    for (cJSON *it = ui_arr->child; it; it = it->next) {
+        cJSON *uch = cJSON_GetObjectItem(it, "channel");
+        cJSON *uad = cJSON_GetObjectItem(it, "address");
+        if (cJSON_IsNumber(uch) && cJSON_IsNumber(uad) &&
+            uch->valueint == ch && uad->valueint == addr) {
+            removed += 0; // já contamos lá em cima; aqui só ignora no JSON
+            continue;
+        }
+        cJSON_AddItemToArray(new_arr, cJSON_Duplicate(it, /* recurse */ 1));
+    }
+    cJSON_ReplaceItemInObject(ui_root, "sensors", new_arr);
+
+    // Persiste JSON
+    char *ui_json = cJSON_PrintUnformatted(ui_root);
+    if (ui_json) {
+        FILE *fw = fopen(RS485_MAP_UI_PATH, "wb");
+        if (fw) {
+            fwrite(ui_json, 1, strlen(ui_json), fw);
+            fclose(fw);
+        }
+        free(ui_json);
+    }
+    cJSON_Delete(ui_root);
+
+    // --- Resposta ---
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "removed", (double)removed);
+    cJSON_AddNumberToObject(resp, "remaining", (double)wr);
+    char *out_json = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out_json ? out_json : "{\"ok\":true}");
+    free(out_json);
+    cJSON_Delete(resp);
+    return ESP_OK;
+}
+
+
 
 //--------------------------------------------------------------------
 static esp_err_t config_maintenance_get_handler(httpd_req_t *req) {
