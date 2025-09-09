@@ -573,20 +573,16 @@ static esp_err_t stop_server(httpd_handle_t server)
 // --- Console TCP: wrappers simples para ligar/desligar em um lugar só ---
 static void console_tcp_enable(uint16_t port)
 {
-    // Sobe servidor TCP em background (independe do IP já estar pronto)
-    ESP_ERROR_CHECK(start_tcp_log_server_task(port));
-    // Redireciona ESP_LOGx() para o "tee": Serial + TCP
-//    tcp_log_install_tee();
-    // (Re)instala o mux como vprintf (seguro chamar mais de uma vez)
+    // Sobe o servidor TCP do console (seu start já existente)
+    start_tcp_log_server_task(port);
+
+    // (Re)instala o mux de logs e DUPLICA para TCP sem matar a UART
     logmux_init(NULL);
-    // Pluga o writer do TCP e habilita duplicação
     logmux_set_tcp_writer(tcp_log_vprintf);
-    logmux_enable_uart(false);   // mantém serial ativa
-    logmux_enable_tcp(true);    // adiciona TCP -> DUPLICADO
-    // (opcional) aumentar verbosidade:
-    // esp_log_level_set("*", ESP_LOG_INFO);
+    logmux_enable_uart(false);   // <- manter a serial sempre ativa
+    logmux_enable_tcp(true);
+
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
-    
 /*    esp_err_t ret;  
     ret = modbus_master_init();
     if (ret != ESP_OK) {
@@ -620,13 +616,14 @@ static void console_tcp_enable(uint16_t port)
     
 }
 
-static void console_tcp_disable(void)
-{
-	logmux_enable_tcp(false);
-    // Restaura destino anterior do log e para o servidor TCP
- //   tcp_log_uninstall_tee();
+static void console_tcp_disable(void) {
+    // Desliga o writer TCP e reabilita completamente a UART
+    logmux_set_tcp_writer(NULL);
+    logmux_enable_tcp(false);
+    logmux_enable_uart(true);
+    logmux_restore();             // restaura vprintf original
     stop_tcp_log_server_task();
-    ESP_LOGI("CONSOLE", "TCP log console disabled");
+    ESP_LOGI("CONSOLE", "TCP log console DISABLED");
 }
 //*******************************************
 //HTTP HANDLER FUNCTIONS
@@ -1226,81 +1223,73 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-
-
-// ========================================================
-// RS485 - PING: GET /rs485Ping?channel=X&address=Y
-// Por ora, devolvemos um stub { "alive": false } para tirar o 500.
-// Depois, é só conectar aqui sua função rs485_ping() real.
-// ========================================================
+// GET /rs485Ping?channel=X&address=Y[&ts=...]
+// Versão leve: NÃO faz "probe" de driver (rs485_registry_*); apenas verifica presença.
+// Usa modbus_master_ping() (read-only, rápido). Mantém o mesmo JSON da versão anterior.
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
-    // --- Parse de query: channel e address (address é o que importa para o barramento)
+    // --- Rate-limit/cache simples (por endereço) ---
+    typedef struct { TickType_t ts; bool alive; uint8_t fc; esp_err_t err; } ping_cache_t;
+    static ping_cache_t s_ping_cache[248] = {0}; // 1..247
+    const TickType_t MIN_INTERVAL = pdMS_TO_TICKS(300);
+
     char qbuf[64], param[16];
     int ch = 0, addr = 0;
     int qlen = httpd_req_get_url_query_len(req) + 1;
     if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
-            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) ch = atoi(param);
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) ch   = atoi(param);
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK) addr = atoi(param);
         }
     }
-    if (addr <= 0 || addr > 247) {  // faixa válida Modbus RTU
+    if (addr <= 0 || addr > 247) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"error\":\"invalid_address\"}");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"type\":\"\",\"subtype\":\"\",\"driver\":\"\",\"exception\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
 
-    // --- Lazy init do Modbus Master (idempotente)
-    esp_err_t ret = modbus_master_init();
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Modbus init failed: %s", esp_err_to_name(ret));
+    // cache hit recente?
+    TickType_t now = xTaskGetTickCount();
+    ping_cache_t *C = &s_ping_cache[addr];
+    if (C->ts && (now - C->ts) < MIN_INTERVAL) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "alive", C->alive);
+        cJSON_AddNumberToObject(root, "used_fc", C->fc);
+        cJSON_AddStringToObject(root, "type", ""); cJSON_AddStringToObject(root, "subtype", ""); cJSON_AddStringToObject(root, "driver", "");
+        cJSON_AddBoolToObject(root, "exception", false);
+        char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"error\":\"modbus_init\"}");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+        free(json); cJSON_Delete(root);
         return ESP_OK;
     }
 
-    // --- Tenta identificar via DRIVERS (registry) primeiro
-    rs485_type_t t = RS485_TYPE_INVALID;
-    rs485_subtype_t st = RS485_SUBTYPE_NONE;
-    uint8_t used_fc = 0;
-    const char *drv = NULL;
+    (void) modbus_master_init();
 
-    bool alive = false;
-    bool matched = rs485_registry_probe_any((uint8_t)addr, &t, &st, &used_fc, &drv);
-    if (matched) {
-        alive = true;
-        ESP_LOGI("RS485_PING", "det: addr=%d driver=%s type=%s st=%s fc=0x%02X",
-                 addr, drv ? drv : "", rs485_type_to_str(t), rs485_subtype_to_str(st), used_fc);
-    } else {
-        // --- Fallback: ping genérico (FC04@0x0001 -> FC03@0x0000)
-        bool ping_alive = false; uint8_t ping_fc = 0;
-        ret = modbus_master_ping((uint8_t)addr, &ping_alive, &ping_fc);
-        alive = (ret == ESP_OK) && ping_alive;
-        used_fc = alive ? ping_fc : 0x00;
-        ESP_LOGI("RS485_PING", "gen: addr=%d alive=%d fc=0x%02X err=%s",
-                 addr, (int)alive, used_fc, esp_err_to_name(ret));
-    }
+    bool alive = false; uint8_t used_fc = 0x00;
+    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
 
-    // --- Monta resposta JSON
+    // atualiza cache
+    C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
+
+    ESP_LOGI("RS485_PING", "light: addr=%d alive=%d fc=0x%02X err=%s",
+             addr, (int)alive, used_fc, esp_err_to_name(ret));
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "alive", alive);
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
-    cJSON_AddStringToObject(root, "type",   alive && matched ? rs485_type_to_str(t)       : "");
-    cJSON_AddStringToObject(root, "subtype",alive && matched ? rs485_subtype_to_str(st)   : "");
-    cJSON_AddStringToObject(root, "driver", alive && matched && drv ? drv : "");
+    cJSON_AddStringToObject(root, "type", ""); cJSON_AddStringToObject(root, "subtype",""); cJSON_AddStringToObject(root, "driver","");
     cJSON_AddBoolToObject(root, "exception", false);
-
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
-
-    free(json);
-    cJSON_Delete(root);
+    free(json); cJSON_Delete(root);
     return ESP_OK;
 }
+
+
 
 // ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====
 static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
@@ -1832,13 +1821,7 @@ static esp_err_t exit_device_post_handler(httpd_req_t *req) {
     clear_display();
     vTaskDelay(pdMS_TO_TICKS(150));
     save_system_config_data_time();
-/*     if(!has_factory_config()||!has_device_active())
-	    {
-         printf(">>>DESLIGADO<<<\n");
-         vTaskDelay(pdMS_TO_TICKS(100));
-	     start_deep_sleep();
-	    }*/
-    
+
     // Envia a resposta HTTP e fecha o socket
     if (has_activate_sta()) {
         httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
@@ -2409,8 +2392,13 @@ static esp_err_t ping_handler(httpd_req_t *req)
 static void shutdown_task(void* pvParameters) {
 
     user_initiated_exit = true;
-  //  Desabilita TCP console (solta socket/printf)
-    console_tcp_disable();
+  
+      // === NOVO: encerrar sessão Modbus e devolver logs para UART ===
+    modbus_master_deinit();      // solta RS-485 (UART volta a modo UART e desmuta o log)
+    console_tcp_disable();         // desliga console TCP, volta prints na UART
+    vTaskDelay(pdMS_TO_TICKS(50));   // pequeno respiro para LWIP/tee
+    uart_flush(UART_NUM_0);          // garante saída imediata na serial
+    
             // Stop Factory server
     stop_factory_server();
     printf("Servidor HTTP parado.\n");

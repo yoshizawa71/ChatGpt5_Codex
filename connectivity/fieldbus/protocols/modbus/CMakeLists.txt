@@ -5,6 +5,7 @@ idf_component_register( SRCS "src/modbus_rtu_master.c"
                         REQUIRES espressif__esp-modbus
                                  driver 
                                  freertos
+                                 log_mux
 )
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 

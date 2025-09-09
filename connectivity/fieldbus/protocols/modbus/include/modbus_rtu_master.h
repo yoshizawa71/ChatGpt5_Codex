@@ -27,6 +27,8 @@ typedef struct {
 
 /* -------- Inicialização / tarefa leitora -------- */
 esp_err_t modbus_master_init(void);
+esp_err_t modbus_master_deinit(void);
+
 esp_err_t modbus_master_start_task(void);
 
 /* -------- Wrappers de leitura (usados pelos drivers) -------- */
