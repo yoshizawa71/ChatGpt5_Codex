@@ -12,6 +12,7 @@ idf_component_register(SRCS "${srcs}"
                              mqtt
                              esp_wifi
                              nvs_flash
+                             time_sync_sntp
                              )
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 

@@ -1,29 +1,96 @@
-/*
- * wifi_softap_sta.h
- *
- *  Created on: 15 de ago. de 2025
- *      Author: geopo
- */
+// wifi_softap_sta.h
+// Interface pública para controle robusto AP+STA no ESP-IDF.
+// - start_wifi_ap_sta(): inicializa netifs, Wi-Fi e sobe em modo AP+STA
+// - stop_wifi_ap_sta():  desliga tudo (use só para “parar geral”)
+// - wifi_ap_suspend_temporarily(): silencia o AP por N segundos (mantém STA)
+// - wifi_ap_force_enable():        religa o AP imediatamente (AP+STA)
+// - wifi_ap_force_disable():       desliga o AP mantendo STA
+// - wifi_ap_is_running():          consulta se o SoftAP está ativo
+//
+// Integração com Factory Control / Low Power:
+// * Se STA NÃO estiver ativo (has_activate_sta() == false), seu FC pode ir
+//   para deep sleep normalmente. Este driver não chama deep sleep.
+// * Se STA estiver ativo e você precisar “devolver a internet” ao usuário
+//   (Exit/timeout do front), chame wifi_ap_suspend_temporarily(segundos).
+//   O AP volta sozinho após o período ou via wifi_ap_force_enable().
+//
+// Observação: este header NÃO expõe helpers internos como get_ssid_*() ou
+// has_activate_sta(); eles pertencem ao seu projeto.
 
-#ifndef CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
-#define CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_
+#pragma once
 
-#include "esp_err.h"
 #include <stdbool.h>
-#include "esp_wifi.h"
+#include <stdint.h>
+#include "esp_err.h"
 
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Inicia Wi-Fi em modo AP+STA.
+ *
+ * Cria as interfaces padrão (AP e STA), registra handlers de evento,
+ * configura o SoftAP com SSID/senha obtidos do seu storage (get_ssid_ap(),
+ * get_password_ap()) e inicia o Wi-Fi. O STA tentará conectar caso
+ * has_activate_sta() retorne true e as credenciais existam.
+ *
+ * Importante:
+ *  - Alimentação por fonte: o driver configura WIFI_PS_NONE (sem power-save).
+ *  - Se quiser economia em bateria, mude para WIFI_PS_MIN_MODEM no seu fluxo.
+ *
+ * @return ESP_OK em sucesso; erro do IDF caso falhe.
+ */
 esp_err_t start_wifi_ap_sta(void);
-void      stop_wifi_ap_sta(void);
-void ap_restart_cb(void* arg);
 
-extern volatile bool sta_connected; // Estado atual da conexão STA
-extern volatile bool sta_intentional_disconnect; // Flag de desconexão intencional
+/**
+ * @brief Para completamente o Wi-Fi (modo NULL + deinit das pilhas).
+ *
+ * Use APENAS quando quiser desligar tudo (ex.: desligar dispositivo,
+ * trocar de modo radical, etc.). Para o caso de “Exit/timeout do front”,
+ * NÃO use esta função — prefira wifi_ap_suspend_temporarily().
+ */
+void stop_wifi_ap_sta(void);
 
-// Define o modo e ajusta o power-save apropriadamente.
-// - APSTA  -> WIFI_PS_NONE (recomendado p/ estabilidade do AP)
-// - STA    -> (opcional) manter NONE ou usar MIN_MODEM se quiser economizar
-// - AP     -> NONE
-esp_err_t wifi_set_mode_with_ps(wifi_mode_t mode);
+/**
+ * @brief Suspende o SoftAP temporariamente, mantendo o STA ativo.
+ *
+ * Troca o modo para WIFI_MODE_STA (sem deinit), agenda um timer one-shot
+ * para religar o AP após `seconds`. Durante a suspensão, eventos que
+ * pararem o AP não irão religá-lo até o fim da janela.
+ *
+ * Exemplo de uso no “Exit” do front: wifi_ap_suspend_temporarily(90);
+ *
+ * @param seconds  Quantos segundos o SoftAP ficará suspenso (se 0, usa default).
+ */
+void wifi_ap_suspend_temporarily(uint32_t seconds);
 
-#endif /* CONNECTIVITY_ACCESS_NETWORK_WIFI_INCLUDE_WIFI_SOFTAP_STA_H_ */
+/**
+ * @brief Religa o SoftAP imediatamente (volta para AP+STA).
+ *
+ * Útil para um botão “Reativar Portal Agora” no front ou para cenários
+ * em que você deseja encerrar a janela de suspensão antes do tempo.
+ * Idempotente: se já estiver em AP+STA, apenas garante o START.
+ */
+void wifi_ap_force_enable(void);
+
+/**
+ * @brief Desliga o SoftAP mantendo o STA.
+ *
+ * Coloca o Wi-Fi em WIFI_MODE_STA, sem timers. Útil se você quiser manter
+ * o portal desligado por tempo indeterminado enquanto o STA opera.
+ */
+void wifi_ap_force_disable(void);
+
+/**
+ * @brief Indica se o SoftAP está ativo (modo AP ou AP+STA).
+ *
+ * @return true se o AP está rodando; false caso contrário.
+ */
+bool wifi_ap_is_running(void);
+
+void wifi_sta_mark_intentional_disconnect(bool enable);
+
+#ifdef __cplusplus
+}
+#endif

@@ -97,8 +97,6 @@ static void console_tcp_enable(uint16_t port);
 static void console_tcp_disable(void);
 //------------Tasks--------------
 static void shutdown_task(void* pvParameters);
-static void restart_ap_task(void *pvParameters);
-static void exit_ap_task(void *pvParameters);
 //-------------------------------
 static esp_err_t rest_common_get_handler(httpd_req_t *req);
 static esp_err_t config_device_get_handler(httpd_req_t *req);
@@ -148,9 +146,9 @@ xTaskHandle Factory_Config_TaskHandle = NULL;
 
 
 // Variáveis globais para cache do estado
-//static bool sta_connected = false;
+static bool sta_connected = false;
 static bool sta_status_task = false;
- bool ap_active = true;
+bool ap_active = true;
 static char sta_ssid[32] = {0};
 static char sta_password[64] = {0};
 
@@ -1731,9 +1729,6 @@ if (cJSON_HasObjectItem(root, "unit")) {
     return ESP_OK;
 }
 
-
-
-
 static esp_err_t rele_activate(httpd_req_t *req)
 {
     update_last_interaction();
@@ -1807,71 +1802,68 @@ static esp_err_t rele_activate(httpd_req_t *req)
 }
 
 //-----------------------------------------------
-/*static esp_err_t reboot_device_post_handler(httpd_req_t *req)
+
+// Saída unificada do front: STA ativo → silencia AP por N s; STA inativo → deep sleep.
+// Se req_optional != NULL, responde o HTTP.
+#include "wifi_softap_sta.h"   // garante acesso a wifi_ap_suspend_temporarily(), wifi_ap_is_running()
+
+/* Guard opcional (defina no topo do arquivo se ainda não tiver) */
+// static bool exit_already_fired = false;
+
+/**
+ * Saída unificada do front:
+ * - STA ativo  → silencia o AP por N segundos (ele volta sozinho depois).
+ * - STA inativo→ inicia deep sleep.
+ * Também registra a interação para evitar retrigger imediato do timeout.
+ */
+static void factory_exit_common(uint32_t ap_silence_secs)
 {
-	if (!lte_task_ON)
-	{
-	save_system_config_data_time();
-    esp_restart();
-	}
-	else
-	{
-     printf("Nao pode ser feito o restart enquanto o modem estiver ligado");
-     return 0;
-	}
-
-}
-*/
-// Tarefa para desconectar o AP ou entrar em deep sleep
-static void exit_ap_task(void *pvParameters) {
-
-       esp_wifi_set_mode(WIFI_MODE_STA); // Apenas STA
-       ESP_LOGI(TAG, "AP desconectado temporariamente (STA ativo)");
-       ap_active = false;
-       xTaskCreate(restart_ap_task, "restart_ap_task", 4096, NULL, 5, NULL);
-        
-       vTaskDelete(NULL);
-}
-
-static esp_err_t exit_device_post_handler(httpd_req_t *req) {
-    printf("]]]]]] Passou pelo Exit [[[[[\n");
+    user_initiated_exit = true;
     clear_display();
     vTaskDelay(pdMS_TO_TICKS(150));
     save_system_config_data_time();
 
-    // Envia a resposta HTTP e fecha o socket
+    if (has_activate_sta()) {
+        ESP_LOGI(TAG, "Saída: STA ativo → suspendendo AP por %u s", (unsigned)ap_silence_secs);
+        // >>> Não toque em ap_active nem chame esp_wifi_set_mode() aqui <<<
+        wifi_ap_suspend_temporarily(ap_silence_secs);
+    } else {
+        ESP_LOGI(TAG, "Saída: STA inativo → deep sleep");
+        xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);
+    }
+
+    // Evita re-timeout imediato: zera o cronômetro de inatividade
+    update_last_interaction();
+
+    // Reboot opcional pós-setup inicial (mantém seu comportamento)
+    if (first_factory_setup && has_factory_config()) {
+        ESP_LOGI(TAG, "### RESTART ###");
+        save_system_config_data_time();
+        first_factory_setup = false;
+        esp_restart();
+    }
+}
+
+
+static esp_err_t exit_device_post_handler(httpd_req_t *req)
+{
+    const uint32_t ap_silence_secs = 30; // ajuste se quiser (ex.: 30)
+
     if (has_activate_sta()) {
         httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
-        ESP_LOGI(TAG, "Resposta enviada, agendando desconexão do AP");
     } else {
         httpd_resp_send(req, "Dispositivo entrando em deep sleep", HTTPD_RESP_USE_STRLEN);
-        ESP_LOGI(TAG, "Resposta enviada, agendando deep sleep");
     }
-    
-    // Força o fechamento da sessão HTTP
-    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    vTaskDelay(pdMS_TO_TICKS(50)); // Pequeno delay para garantir o fechamento
-    
-    if (has_activate_sta()&&ap_active)
-	   {
-		xTaskCreate(exit_ap_task, "exit_ap_task", 4096, req, 5, NULL);
-       }
-    else{  
-        xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);  
-	   }
-	   
-	   if(first_factory_setup&&has_factory_config())
-	   {
-		printf("### RESTART ###\n");
-		save_system_config_data_time();
-		set_inactivity();
-		first_factory_setup=false;
-		esp_restart();  
-	   }
 
+    // Fecha a sessão HTTP antes de acionar a saída
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Usa o caminho unificado
+    factory_exit_common(ap_silence_secs);
     return ESP_OK;
-  
 }
+
 
 // Função separada para parar o servidor HTTP (chamada em outro contexto se necessário)
 void stop_http_server(httpd_handle_t server)
@@ -2135,7 +2127,8 @@ static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
     cJSON *disconnect = cJSON_GetObjectItem(root, "disconnect");
     if (disconnect && cJSON_IsTrue(disconnect)) {
         ESP_LOGI(TAG, "Desconectando STA...");
-        sta_intentional_disconnect = true;
+//        sta_intentional_disconnect = true;
+        wifi_sta_mark_intentional_disconnect(true);
         set_activate_sta(false); // Atualiza dev_config e NVS
         esp_err_t err = esp_wifi_disconnect();
         if (err != ESP_OK) {
@@ -2166,7 +2159,7 @@ static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
                 .ssid = {0},
                 .password = {0},
                 .scan_method = WIFI_ALL_CHANNEL_SCAN,
-                .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
+                .threshold.authmode = WIFI_AUTH_WPA2_PSK,
             },
         };
  //       strncpy((char *)wifi_config.sta.ssid, sta_ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -2183,7 +2176,8 @@ static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
         }
 
         ESP_LOGI(TAG, "Configuração STA aplicada, tentando conectar...");
-        sta_intentional_disconnect = false;
+//        sta_intentional_disconnect = false;
+        wifi_sta_mark_intentional_disconnect(false);
         set_activate_sta(true);
         err = esp_wifi_connect();
         if (err != ESP_OK) {
@@ -2197,15 +2191,6 @@ static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
 
     cJSON_Delete(root);
     return ESP_OK;
-}
-
-// Tarefa para reativar o AP
-static void restart_ap_task(void *pvParameters) {
-    vTaskDelay(pdMS_TO_TICKS(10000)); // 5 segundos
-    esp_wifi_set_mode(WIFI_MODE_APSTA); // Volta para AP+STA
-    ESP_LOGI(TAG, "AP reativado após 5 segundos");
-    ap_active = true;
-    vTaskDelete(NULL);
 }
 
 //================================================
@@ -2397,7 +2382,7 @@ ESP_LOGI("PING", "Recebido /ping do front");
     if (esp_wifi_get_mode(&mode) == ESP_OK) {
         if ((mode & WIFI_MODE_AP) == 0 && !user_initiated_exit) {
             ESP_LOGW("PING", "SoftAP caiu! Religando imediatamente...");
-            ap_restart_cb(NULL);
+              wifi_ap_force_enable();
         }
     } else {
         ESP_LOGE("PING", "Falha em esp_wifi_get_mode()");
@@ -2452,6 +2437,7 @@ void Factory_Config_Task(void* pvParameters)
 {
 	bool factory_task_ON = true;
  	Send_FactoryControl_Task_ON= true;
+ 	static bool exit_already_fired = false;   // <--- [NOVO GUARD]
     xQueueSend(xQueue_Factory_Control, &Send_FactoryControl_Task_ON,/*timeout=*/0);
 
 	start_factory_routine();
@@ -2465,27 +2451,24 @@ void Factory_Config_Task(void* pvParameters)
         TickType_t last_interaction = get_factory_routine_last_interaction();                 
         TickType_t tick_diff = (now_ticks >= last_interaction) ? (now_ticks - last_interaction) : 0;
         
-//        ESP_LOGI(TAG, "Factory Last Interaction ====> %u ms", tick_diff * portTICK_PERIOD_MS);     
-//--------------------------------------------------------------------------
-//Somente para garantir que não entre no deep sleep antes do momento certo
-//--------------------------------------------------------------------------
-               if(save_button_action)
-                 {
-                  last_interaction_ticks = xTaskGetTickCount();
-			      save_button_action=false;
-				  ESP_LOGI(TAG, "Save button action reset last_interaction_ticks to %u", last_interaction_ticks);
-				  }
-//--------------------------------------------------------------------------
 
-               if ((tick_diff >= pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000)) && 
-            Send_FactoryControl_Task_ON && !has_activate_sta())
-	                      {
-							user_initiated_exit = true; 
-	                        save_system_config_data_time();
-	                        printf(">>>!!!Go to Deep Sleep!!!<<<\n");
-                             xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);
-                                   
-                            }
+// Re-armar o guard quando há atividade OU quando o AP já voltou
+if (tick_diff < pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000) || wifi_ap_is_running()) {
+    exit_already_fired = false;
+}
+                            
+if ((tick_diff >= pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000)) && Send_FactoryControl_Task_ON) {
+    if (!exit_already_fired) {
+        // Só dispara se o AP ainda estiver ON (evita reprogramar durante a suspensão)
+        if (!has_activate_sta() || wifi_ap_is_running()) {
+            ESP_LOGI(TAG, "Timeout de %d s → saída unificada", FACTORY_CONFIG_TIMER);
+            factory_exit_common(/*ap_silence_secs=*/30);   // ou 90; você decide
+            exit_already_fired = true;
+        } else {
+            ESP_LOGI(TAG, "Timeout atingido, mas AP suspenso — não reprogramar");
+        }
+    }
+}
                                           
        if (server_shutdown_requested) {
 		   printf("xQueue_Factory_Control -->>>>send\n");
@@ -2502,7 +2485,7 @@ void Factory_Config_Task(void* pvParameters)
       
             // Reset flag after attempting deep sleep (though this line won't be reached normally)
             
-        }
+          }
    BaseType_t result = xQueueSend(xQueue_Factory_Control, (void*)&Send_FactoryControl_Task_ON , (TickType_t)30 );
 
         if (!factory_task_ON&&result == pdPASS)

@@ -8,7 +8,6 @@ set(src_driver
                "src/TCA6408A.c"
                "src/timer.c" 
                "src/uart_modem.c"
-               "src/wifi_ap.c"
                )
 
 idf_component_register(SRCS "${src_driver}"
