@@ -36,6 +36,7 @@ bool read_record_pulse_file(uint32_t* byte_to_read, char* str);
 bool read_record_pressure_file(uint32_t* byte_to_read, char* str);
 
 esp_err_t save_record_sd(int channel, char *data);
+esp_err_t save_record_sd_rs485(int channel, int subindex, const char *value_str);
 esp_err_t read_record_sd(uint32_t *cursor_pos, struct record_data_saved* record_data);
 esp_err_t delete_record_sd(void);
 void index_config_init(void);

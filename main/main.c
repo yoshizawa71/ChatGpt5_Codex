@@ -160,13 +160,12 @@ static void check_i2c_bus(void) {
     }
 }
 
-static void logmux_early_init(void)
-{
-    // Instala o mux como vprintf do ESP_LOG
-    logmux_init(NULL);          // ainda sem writer TCP
-    // Duplicação por padrão: mantemos Serial ligada
-    logmux_enable_uart(true);
-    logmux_enable_tcp(false);   // TCP liga quando o console subir
+// chame isto no comecinho do app_main(), antes de inicializar Wi-Fi etc.
+static void logmux_early_init(void) {
+    logmux_init(NULL);          // instala como vprintf dos ESP_LOGx
+    logmux_enable_uart(false);  // UART0 muda desde o início do app
+    logmux_enable_tcp(false);   // liga depois que o servidor TCP subir
+    esp_log_level_set("*", ESP_LOG_INFO); // ajuste o nível global
 }
 
 

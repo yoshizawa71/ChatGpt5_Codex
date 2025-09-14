@@ -67,6 +67,10 @@ bool Receive_Response_FactoryControl = false;
 
 #define RS485_MAP_UI_PATH   "/littlefs/rs485_map_ui.json"
 
+#ifndef ENABLE_PING_LOG
+#define ENABLE_PING_LOG 0
+#endif
+
 typedef struct rest_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
     char scratch[SCRATCH_BUFSIZE];
@@ -297,6 +301,11 @@ static esp_err_t start_server(void)
         free(rest_context);
         return ESP_FAIL;
     }
+    
+    // silencia o /ping e garante ENERGY/SDMMC visíveis
+esp_log_level_set("PING",   ESP_LOG_NONE);
+esp_log_level_set("ENERGY", ESP_LOG_INFO);
+esp_log_level_set("SDMMC",  ESP_LOG_INFO);
 //--------------------------------------------    
 // Registrar o novo endpoint
 
@@ -573,46 +582,11 @@ static esp_err_t stop_server(httpd_handle_t server)
 // --- Console TCP: wrappers simples para ligar/desligar em um lugar só ---
 static void console_tcp_enable(uint16_t port)
 {
-    // Sobe o servidor TCP do console (seu start já existente)
-    start_tcp_log_server_task(port);
-
-    // (Re)instala o mux de logs e DUPLICA para TCP sem matar a UART
-    logmux_init(NULL);
-    logmux_set_tcp_writer(tcp_log_vprintf);
-    logmux_enable_uart(false);   // <- manter a serial sempre ativa
-    logmux_enable_tcp(true);
-
+    start_tcp_log_server_task(port);        // seu servidor TCP (não bloqueante)
+    logmux_set_tcp_writer(tcp_log_vprintf); // writer do tcp_log_server.c
+    logmux_enable_tcp(true);                // envia logs para TCP
+    logmux_enable_uart(true);              // mantém UART0 muda
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
-/*    esp_err_t ret;  
-    ret = modbus_master_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize Modbus Master: %s", esp_err_to_name(ret));
-        return;
-    }
-    
-    // ---- TESTE 1: probe via registry (tenta drivers conhecidos antes de ping genérico)
-    uint8_t addr = 1; // ajuste para o endereço que você está usando
-    rs485_type_t t; rs485_subtype_t st; uint8_t fc = 0; const char *drv = NULL;
-    if (rs485_registry_probe_any(addr, &t, &st, &fc, &drv)) {
-        ESP_LOGI("PING", "Detectado driver=%s type=%s fc=0x%02X",
-                 drv, rs485_type_to_str(t), fc);
-        // ---- TESTE 2 (opcional): leitura única no XY_MD02
-        if (t == RS485_TYPE_TERMOHIGRO || t == RS485_TYPE_TEMPERATURA || t == RS485_TYPE_UMIDADE) {
-            float tc=0, rh=0; bool has_hum=false;
-            if (temperature_rs485_read(addr, &tc, &rh, &has_hum) >= 0) {
-                if (has_hum) ESP_LOGI("XYMD02", "Temp: %.1f C  RH: %.1f %%", tc, rh);
-                else         ESP_LOGI("XYMD02", "Temp: %.1f C", tc);
-            } else {
-                ESP_LOGW("XYMD02", "Falha na leitura pontual");
-            }
-        }
-    } else {
-        // ---- Fallback: ping genérico (FC04@0x0001 → FC03@0x0000)
-        bool alive=false; uint8_t used_fc=0;
-        ret = modbus_master_ping(addr, &alive, &used_fc);
-        ESP_LOGI("PING", "addr=%u alive=%d fc=0x%02X err=%s",
-                 addr, alive, used_fc, esp_err_to_name(ret));
-    }*/
     
 }
 
@@ -1012,6 +986,12 @@ static esp_err_t rs485_config_get_handler(httpd_req_t *req)
     size_t count = 0;
     load_rs485_config(map, &count);  // persiste channel/address no binário  :contentReference[oaicite:4]{index=4}
 
+ESP_LOGI("RS485_REG_GLUE", "DELETE: carregado count=%u", (unsigned)count);
+for (size_t i = 0; i < count; ++i) {
+    ESP_LOGI("RS485_REG_GLUE", "ATUAL[%u]: ch=%u addr=%u type='%s' subtype='%s'",
+             (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
+}
+
     for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
         cJSON *it = cJSON_CreateObject();
         cJSON_AddNumberToObject(it, "channel", map[i].channel);
@@ -1076,6 +1056,12 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
     sensor_map_t map[RS485_MAX_SENSORS] = {0};
     size_t count = 0;
     (void) load_rs485_config(map, &count);  // OK se vazio
+    
+    ESP_LOGI("RS485_REG_GLUE", "POST/SAVE: carregado count=%u (antes do upsert)", (unsigned)count);
+    for (size_t i = 0; i < count; ++i) {
+    ESP_LOGI("RS485_REG_GLUE", "EXISTE[%u]: ch=%u addr=%u type='%s' subtype='%s'",
+             (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
+}
 
     // Também vamos manter/atualizar o JSON do front
     // Estrutura: { "sensors": [ {channel, address, type, subtype, ...} ] }
@@ -1125,6 +1111,7 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         const char *ty = jtype->valuestring;
         const char *st = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
 
+ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'", ch, addr, ty, st);
         // --- Ping curto para validar slave ---
         uint8_t used_fc = 0;
         bool exception = false; // <== corrige tipo
@@ -1145,6 +1132,8 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         }
         cJSON_AddNumberToObject(it, "used_fc", used_fc);
 
+ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
+
         // --- Upsert no binário (replace se já existir, senão append) ---
         sensor_map_t cand = {0};
         cand.channel = (uint8_t)ch;
@@ -1153,6 +1142,10 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         strncpy(cand.subtype, st, sizeof(cand.subtype) - 1);
 
         bool replaced = false;
+        // Substitua o seu ESP_LOGI atual por:
+ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replaced=%s)",
+         cand.channel, cand.address, cand.type, cand.subtype, replaced ? "yes" : "no");
+
         for (size_t i = 0; i < count; ++i) {
             if (map[i].channel == cand.channel && map[i].address == cand.address) {
                 map[i] = cand;
@@ -1195,6 +1188,12 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         }
     }
 
+ESP_LOGI("RS485_REG_GLUE", "POST/SAVE: FINAL count=%u (vai persistir)", (unsigned)count);
+for (size_t i = 0; i < count; ++i) {
+    ESP_LOGI("RS485_REG_GLUE", "FINAL[%u]: ch=%u addr=%u type='%s' subtype='%s'",
+             (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
+}
+
     // Persiste binário consolidado
     esp_err_t ret = save_rs485_config(map, count);
     if (ret != ESP_OK) {
@@ -1203,6 +1202,8 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
         return ret;
     }
+    ESP_LOGI("RS485_REG_GLUE", "POST/SAVE: OK (count=%u)", (unsigned)count);
+
 
     // Persiste JSON do front
     char *ui_json = cJSON_PrintUnformatted(ui_root);
@@ -1311,11 +1312,19 @@ static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing_or_invalid_params\"}");
         return ESP_OK;
     }
+    
+    ESP_LOGI("RS485_REG_GLUE", "DELETE pedido: channel=%d address=%d", ch, addr);
 
     // --- Carrega binário e filtra fora o alvo ---
     sensor_map_t map[RS485_MAX_SENSORS] = {0};
     size_t count = 0;
     (void) load_rs485_config(map, &count);
+    
+    ESP_LOGI("RS485_REG_GLUE", "DELETE: carregado count=%u", (unsigned)count);
+for (size_t i = 0; i < count; ++i) {
+    ESP_LOGI("RS485_REG_GLUE", "ATUAL[%u]: ch=%u addr=%u type='%s' subtype='%s'",
+             (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
+}
 
     sensor_map_t out[RS485_MAX_SENSORS] = {0};
     size_t wr = 0, removed = 0;
@@ -1332,6 +1341,11 @@ static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save_failed");
         return ret;
     }
+    ESP_LOGI("RS485_REG_GLUE", "DELETE: remaining=%u (antes de salvar)", (unsigned)wr);
+for (size_t i = 0; i < wr; ++i) {
+    ESP_LOGI("RS485_REG_GLUE", "REMAIN[%u]: ch=%u addr=%u type='%s' subtype='%s'",
+             (unsigned)i, out[i].channel, out[i].address, out[i].type, out[i].subtype);
+}
 
     // --- Atualiza o JSON do front (se existir) removendo o item ---
     FILE *fj = fopen(RS485_MAP_UI_PATH, "rb");
@@ -1383,6 +1397,9 @@ static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
         free(ui_json);
     }
     cJSON_Delete(ui_root);
+    
+    ESP_LOGI("RS485_REG_GLUE", "DELETE OK: removed=%u remaining=%u",
+         (unsigned)removed, (unsigned)wr);
 
     // --- Resposta ---
     cJSON *resp = cJSON_CreateObject();
@@ -2372,7 +2389,9 @@ static esp_err_t delete_registers_get_handler(httpd_req_t *req)
 // Handler para o endpoint /ping
 static esp_err_t ping_handler(httpd_req_t *req)
 {
-    ESP_LOGI("PING", "Recebido /ping do front");
+#if ENABLE_PING_LOG
+ESP_LOGI("PING", "Recebido /ping do front");
+#endif
 
     wifi_mode_t mode;
     if (esp_wifi_get_mode(&mode) == ESP_OK) {

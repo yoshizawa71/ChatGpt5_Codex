@@ -7,6 +7,7 @@
  
 #include "TCA6408A.h"
 #include "battery_monitor.h"
+#include "energy_meter.h"
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
@@ -53,6 +54,10 @@ static const char *TAG = "Main_Control";
 #define SAVE_PULSE_FAILED         (1 << 1)
 #define SAVE_PRESSURE_2_FAILED    (1 << 2)
 
+#ifndef SAVE_ENERGY_FAILED
+#define SAVE_ENERGY_FAILED   (1u << 3)  // use um bit livre; ajuste se 1<<3 já estiver em uso
+#endif
+
 extern uint32_t ulp_inactivity;
 extern bool factory_task_ON;
 extern bool wakeup_inactivity;
@@ -75,6 +80,12 @@ static int load_last_processed_minute(void);
 static void lte_send_data_to_server(void);
 static uint8_t save_sensor_data(void);
 //static void update_system_time(void);
+
+// ====== VALIDAÇÃO FIXA (desligue depois) ======
+#define ENERGY_VALIDATE_FIXED   1
+#define ENERGY_FIX_CHANNEL      3
+#define ENERGY_FIX_ADDRESS      1
+// ==============================================
 
 /*void init_sensor_pwr_supply(void)
 {
@@ -203,6 +214,34 @@ uint8_t result = SAVE_OK;
 	activate_mosfet(disable_analog_sensors);
 	   return result;
 }
+
+// ---------------------------------------------------------------------
+// RS-485 (Energia): salva correntes dos medidores cadastrados.
+// Usa o registry (canal -> endereço e nº de fases).
+// Se não houver nenhum cadastrado (ESP_ERR_NOT_FOUND), NÃO é erro.
+// ---------------------------------------------------------------------
+static void save_sensor_data_rs485(void)
+{
+#if ENERGY_VALIDATE_FIXED
+    ESP_LOGI("RS485", "VALIDAÇÃO: ler CH=%d ADDR=%d (fixo)", ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
+    esp_err_t e = energy_meter_save_currents(ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
+    if (e == ESP_OK) {
+        ESP_LOGI("RS485", "VALIDAÇÃO: gravação OK (3.1/3.2/3.3)");
+    } else {
+        ESP_LOGW("RS485", "VALIDAÇÃO: falha ao gravar (fixo): %s", esp_err_to_name(e));
+    }
+#else
+    esp_err_t e = energy_meter_save_registered_currents();
+    if (e == ESP_OK) {
+        ESP_LOGI("RS485", "Energy: dados salvos a partir do cadastro.");
+    } else if (e == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW("RS485", "Nenhum medidor RS485 cadastrado.");
+    } else {
+        ESP_LOGW("RS485", "Falha ao salvar energia: %s", esp_err_to_name(e));
+    }
+#endif
+}
+
 
 static void lte_send_data_to_server(void){
 
@@ -368,11 +407,18 @@ if ((get_wakeup_cause() == WAKE_UP_EXTERN_SENSOR)&& counter<=7)
 if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load_last_processed_minute())&&has_device_active())// acrescentado para não enviar duas vezes
    {
 	save_last_processed_minute(get_time_minute());  
-    
+    ESP_LOGI("Save Sensor Data", "TESTE: vou chamar save_sensor_data()");
 	uint8_t save_ret = save_sensor_data();
 	if (save_ret != SAVE_OK) {
     ESP_LOGW(TAG, "save_sensor_data falhou com máscara 0x%02x", save_ret);
 }
+
+ESP_LOGI("ENERGY", "TESTE: vou chamar energy_meter_save_registered_currents()");
+save_sensor_data_rs485(); 
+/*extern esp_err_t energy_meter_save_currents(uint8_t channel, uint8_t addr);
+ESP_LOGI("ENERGY", "FORCE: ch=3 addr=1");
+energy_meter_save_currents(3, 1); // grava 3.1/3.2/3.3*/
+
 	
   if(has_measurement_to_send()&&!Receive_NetConnect_Task_ON &&!wifi_on&&(has_network_http_enabled()||has_network_mqtt_enabled()))
 	 {

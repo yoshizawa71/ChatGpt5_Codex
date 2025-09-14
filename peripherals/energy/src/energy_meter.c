@@ -1,319 +1,185 @@
-/*
- * energy_meter.c
- *
- *  Created on: 20 de nov. de 2024
- *      Author: geopo
- */
-
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "soc/soc_caps.h"
-#include "esp_log.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-
-#include "datalogger_driver.h"
-#include "ads1015_reader.h"
-#include "sdmmc_driver.h"
-#include "oled_display.h"
 #include "energy_meter.h"
 
-const static char *TAG = "Energy_Meter";
-#define TASK_STACK_SIZE    (10000)
-xTaskHandle energy_TaskHandle;
-static SemaphoreHandle_t Mutex_energy_meter=NULL;
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include "esp_log.h"
+#include "modbus_rtu_master.h"
 
+extern int rs485_registry_adapter_link_anchor;
+static inline void _force_link_rs485_registry_adapter(void) {
+    (void)rs485_registry_adapter_link_anchor;
+}
 
-void init_energy_meter_config(void)
+/* ---------------------- GANCHOS do registry ----------------------
+ * Implemente estes protótipos no seu registry (o “gerenciador” dos dados
+ * lidos do config_driver.c). Estas versões weak permitem compilar hoje.
+ */
+// energy_meter.c — mude W para D nas WEAK
+__attribute__((weak)) bool rs485_registry_get_channel_addr(uint8_t channel, uint8_t *out_addr)
 {
-	Mutex_energy_meter = xSemaphoreCreateMutex();
-	
-//	struct energy_measured rec_energy_config = {0};
-    struct energy_index_control index_config= {0};
+    ESP_LOGD("ENERGY", "WEAK get_channel_addr() chamada (ch=%u) => sem cadastro", channel);
+    (void)channel; (void)out_addr;
+    return false;
+}
+__attribute__((weak)) int rs485_registry_get_channel_phase_count(uint8_t channel)
+{
+    ESP_LOGD("ENERGY", "WEAK get_channel_phase_count() chamada (ch=%u) => desconhecido", channel);
+    (void)channel; return 0;
+}
+typedef bool (*rs485_iter_cb_t)(uint8_t channel, uint8_t addr, void *user);
+__attribute__((weak)) int rs485_registry_iterate_configured(rs485_iter_cb_t cb, void *user)
+{
+    ESP_LOGD("ENERGY", "WEAK iterate_configured() chamada => retornando 0");
+    (void)cb; (void)user; return 0;
+}
 
- //   get_energy_index_control(&index_config);
-  
 
-    if(!has_record_energy_index_config())
-    {
-        save_default_energy_index_control();
+/* ---------------------- SD: saída no formato desejado ----------------------
+ * Nova rotina no sdcard_mmc.c escreverá: DATA | HORA | CANAL(string) | DADOS(valor)
+ * Ex.: CANAL "3", "4.1", "4.2", "4.3"
+ */
+esp_err_t save_record_sd_rs485(int channel, int subindex, const char *value_str);
+
+static const char *TAG = "ENERGY_METER";
+
+/* JSY-MK-333 (correntes em 0x0103..0x0105; escala /100 A) */
+#define JSY_REG_I_A   0x0103
+#define JSY_I_SCALE   (100.0f)
+
+/* ---------------------- Modbus helpers ---------------------- */
+static inline esp_err_t read_currents_fc03(uint8_t addr, uint16_t raw[3])
+{
+    return modbus_master_read_holding_registers(addr, JSY_REG_I_A, 3, raw);
+}
+static inline esp_err_t read_currents_fc04(uint8_t addr, uint16_t raw[3])
+{
+    return modbus_master_read_input_registers(addr, JSY_REG_I_A, 3, raw);
+}
+
+esp_err_t energy_meter_init(void)
+{
+    esp_err_t err = modbus_master_init();
+    if (err != ESP_OK) ESP_LOGE(TAG, "modbus_master_init() = %s", esp_err_to_name(err));
+    return err;
+}
+
+static inline void convert_raw_currents(const uint16_t raw[3], float outI[3])
+{
+    outI[0] = (float)raw[0] / JSY_I_SCALE;
+    outI[1] = (float)raw[1] / JSY_I_SCALE;
+    outI[2] = (float)raw[2] / JSY_I_SCALE;
+}
+
+esp_err_t energy_meter_read_currents(uint8_t addr, float outI[3])
+{
+    if (!outI) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(energy_meter_init(), TAG, "init");
+
+    uint16_t raw[3] = {0};
+    esp_err_t err = read_currents_fc03(addr, raw);
+    if (err != ESP_OK) {
+        esp_err_t err2 = read_currents_fc04(addr, raw);
+        if (err2 != ESP_OK) return err2;
+        err = err2;
     }
-    get_energy_index_control(&index_config);
- 
-    current_total_counter = index_config.total_counter;
+    convert_raw_currents(raw, outI);
+    ESP_LOGI(TAG, "addr=%u  I: A=%.3f  B=%.3f  C=%.3f", addr, outI[0], outI[1], outI[2]);
+    return ESP_OK;
 }
 
-void save_default_energy_index_control(void)
+/* Força salvar 3 linhas (3.1..3.3) */
+esp_err_t energy_meter_save_currents(uint8_t channel, uint8_t addr)
 {
-	xSemaphoreTake(Mutex_energy_meter,portMAX_DELAY);
-	
-    struct energy_index_control index_config= {0};
+    float I[3]; char buf[24];
+    ESP_RETURN_ON_ERROR(energy_meter_read_currents(addr, I), TAG, "read");
 
-    index_config.last_write_energy_idx = UNSPECIFIC_RECORD;
-    index_config.last_read_energy_idx = UNSPECIFIC_RECORD;
-    index_config.total_counter = 0;
-
-    save_energy_index_control(&index_config);
-    xSemaphoreGive(Mutex_energy_meter);
+    for (int sub = 1; sub <= 3; ++sub) {
+        int n = snprintf(buf, sizeof(buf), "%.3f", I[sub - 1]);
+        if (n <= 0 || n >= (int)sizeof(buf)) return ESP_FAIL;
+        ESP_RETURN_ON_ERROR(save_record_sd_rs485(channel, sub, buf), TAG, "save");
+    }
+    return ESP_OK;
 }
 
-bool has_energy_data_to_send(void)
+/* Por cadastro: 1 → grava "canal" (sem .1); 3 → grava "canal.1/.2/.3" */
+esp_err_t energy_meter_save_currents_by_channel(uint8_t channel)
 {
-    bool ret = false;
- 
-   struct energy_index_control index_config= {0};
- 
-    get_energy_index_control(&index_config);
+    uint8_t addr = 0;
+    if (!rs485_registry_get_channel_addr(channel, &addr)) {
+        ESP_LOGW("ENERGY", "[CH %u] não encontrado no cadastro.", channel);
+        return ESP_ERR_NOT_FOUND;
+    }
 
-    if(index_config.total_counter > 0)
-    {
-        if(index_config.last_write_energy_idx == UNSPECIFIC_RECORD)
-        {
-            if (index_config.last_read_energy_idx != (index_config.total_counter - 1) ){
-                ret = true;
-            }
+    float I[3] = {0};
+    esp_err_t err = energy_meter_read_currents(addr, I);
+    if (err != ESP_OK) {
+        ESP_LOGW("ENERGY", "[CH %u] addr=%u leitura falhou: %s", channel, addr, esp_err_to_name(err));
+        return err;
+    }
+
+    int phases = rs485_registry_get_channel_phase_count(channel);  // 1=mono, 3=tri
+    if (phases != 1 && phases != 3) phases = 3; // default seguro
+
+    ESP_LOGI("ENERGY", "[CH %u] addr=%u phases=%d  I_A=%.3f  I_B=%.3f  I_C=%.3f",
+             channel, addr, phases, I[0], I[1], I[2]);
+
+    char buf[24];
+    if (phases == 1) {
+        snprintf(buf, sizeof(buf), "%.3f", I[0]);
+        return save_record_sd_rs485((int)channel, /*subindex=*/0, buf); // grava "3"
+    } else {
+        for (int sub = 1; sub <= 3; ++sub) {
+            snprintf(buf, sizeof(buf), "%.3f", I[sub - 1]);
+            esp_err_t e = save_record_sd_rs485((int)channel, sub, buf); // grava "4.1/4.2/4.3"
+            if (e != ESP_OK) return e;
         }
-        else{
-            if (index_config.last_write_energy_idx != index_config.last_read_energy_idx) {
-                ret = true;
-            }
-        }
+        return ESP_OK;
     }
-
-    return ret;
 }
 
-/*static void save_energy_data(int channel)
+/* Opcional: salvar de todos os cadastrados */
+typedef struct { esp_err_t last; int saved; } iter_ctx_t;
+static bool iter_cb(uint8_t channel, uint8_t addr, void *user)
 {
-    uint32_t write_idx = UNSPECIFIC_RECORD;
-    struct record_energy record = {0};
-    struct energy_index_control index_config= {0};
-    struct energy_measured pwr = {0};
-    get_energy_measured(&pwr);
-//    int channel =0; //implementar o envio do canal
-	
-    // Verificar se o arquivo excel foi deletado
-       	 if (has_SD_FILE_Deleted_energy())
-       		 {
-       		  save_default_energy_index_control();
-       		  printf("+++ Arquivo excel havia sido deletado +++\n");
-       		  }
-   if (channel == 0)
-      {
-		  printf("======>energy 1 =%s\n", pwr.energy1);  
-		      strcpy(record.date, get_date());
-              strcpy(record.time, get_time());
-              strncpy(record.power_1, pwr.energy1,6);
-//		  printf("}}}}}}>energy1  =%s\n", record.energy_1);
-		   ESP_LOGI(TAG, "Record %s %s %d %s\n", record.date, record.time, channel, record.power_1);
-	  }
-	  else {
-            printf("======>energy 2 =%s\n", pwr.energy2);
-            strcpy(record.date, get_date());
-            strcpy(record.time, get_time());
-            strncpy(record.power_2, pwr.energy2,6);
- //           printf("}}}}}}>energy2  =%s\n", record.energy_2);
-            ESP_LOGI(TAG, "Record %s %s %d %s\n", record.date, record.time, channel, record.power_2); 
-           }
-           
-    get_energy_index_control(&index_config);
-
-
-    if(index_config.last_write_energy_idx != write_idx)
-    {
-        write_idx = (index_config.last_write_energy_idx + 1)%index_config.total_counter;
-    }
-
-    save_record_energy(&write_idx, record, channel);
-
-    index_config.last_write_energy_idx = write_idx;
-    if(write_idx == UNSPECIFIC_RECORD)
-    {
-        index_config.total_counter = index_config.total_counter + 1;
-        current_total_counter = index_config.total_counter;
-    }
-    
-save_energy_index_control(&index_config);
-
-}*/
-
-/*float get_energy_sensor_read(enum sensor leitor, float *Vmin, float *Fcorr, bool no_energy, bool correction_cali, float P_ref,bool *dev_energy)
-{
-static float voltage;
-
-
-if ((has_calibration())&&(no_energy))
-   {
-   *Vmin = (oneshot_analog_read(leitor));    
-    printf(">>>>>>ZERADO <<<<<<< \n");
-    }
-    
-printf(">>>(1)>>>Vmin = %.03f***** \n",*Vmin);
-
-    voltage = (oneshot_analog_read(leitor));
-    if (voltage>0)
-    {
-     *dev_energy=true;
-	}
- //   printf(">>>(1)>>>Voltage -> %f e  Pref = %f \n", voltage, P_ref);
- printf(">>>(2)>>>Voltage -> %f\n", voltage);
- float Diff_Volt_Vmin = voltage-*Vmin; //Não pode ser negativo
- if (Diff_Volt_Vmin<0)
- {Diff_Volt_Vmin =0;}
- 
- printf(">>>(3)>>>Diff_Volt_Vmin -> %f\n", Diff_Volt_Vmin);
-
-         Pbar = ((Pmax*(Diff_Volt_Vmin))/(Vmax-*Vmin));
- printf(">>>(4)>>> Pbar puro -> %f\n", Pbar);
-//         printf("))))) pwrão BAR = %f \n", Pbar);
-
-         Pmca = Pbar * Fmca;
-printf(">>>(5)>>> Pmca puro -> %f\n", Pmca);
-
- //       if(Pmca>0.01 && P_ref>0 && *fcorr_cali&& !*zerado && P_ref>1)//divisão por zero
-printf(">>>(6)>>> Correction Calibration Enabled -> %d\n", correction_cali);
-         if(has_calibration()&&Pmca>0.01 && correction_cali&& !no_energy && P_ref>1)
-         {
-           *Fcorr= (P_ref/Pmca);
- //          *fcorr_cali = false;
-           printf(">>>(7)>>>Fator de correção calculado na condição = %f \n", *Fcorr);
-           printf(">>>(8)>>>pwrao de referencia = %f \n", P_ref);
-         }
-
-         Pmca=Pmca*(*Fcorr);
-printf(">>>(9)>>> Pmca multiplicado pelo fator -> %f\n\n", Pmca);
-         
-return Pmca;
-
-}*/
-
-//-------------------------------------------------------------------
-//            energy Sensor
-//-------------------------------------------------------------------
-
-/*void energy_sensor_read(void)
-{
-//	i2c_master_init(); //Inicialisa o I2C
-	struct energy_measured saved_dataset;
-	struct record_energy saved_time;
-	
-	bool zerar = false;
-	bool correction_enabled = false;
-	char * pEnd1;
-	char * pEnd2;
-	bool dev_energy_1= false;
-    bool dev_energy_2= false;
-    
-    float Vref_pwr1 = strtof(get_reference_cali1(), &pEnd1);//Converte char em float
-//    printf("###########REFERENCE 1 = %.3f\n", Vref_pwr1);
-    float Vref_pwr2 = strtof(get_reference_cali2(), &pEnd2);//Converte char em float
-//    printf("###########REFERENCE 2 = %.3f\n", Vref_pwr2);
-	saved_dataset = get_saved_energy_measured();
-    printf("+++++++++++++++++Get energy 1 = %s\n", get_energy_data1());
-    printf("+++++++++++++++++Get Analog 1 =  %s\n", get_analog_data1());
-	if(has_calibration())
-	  {
-	   zerar = has_level_zero();
-	   correction_enabled = has_correction();
-	   set_analog_data1(get_energy_data1());
-	   set_analog_data2(get_energy_data2());
-	  }
-
-	printf("energy_measured.vmin1= %f\n", saved_dataset.vmin1);
-	printf("energy_measured.vmin2= %f\n", saved_dataset.vmin2);
-	printf("energy_measured.fcorr1= %f\n", saved_dataset.fcorr1);
-	printf("energy_measured.fcorr2= %f\n", saved_dataset.fcorr2);
-
-	printf("energy_measured.energy1= %s\n", saved_dataset.energy1);
-	printf("energy_measured.energy2= %s\n", saved_dataset.energy2);
-	printf("energy_measured.last_energy1= %s\n", saved_dataset.last_energy1);
-	printf("energy_measured.last_energy2= %s\n", saved_dataset.last_energy2);
-	printf("energy_measured.no_energy1= %s\n", saved_dataset.no_energy1 ? "true" : "false");
-	printf("energy_measured.no_energy2= %s\n", saved_dataset.no_energy2 ? "true" : "false");
-//	printf("energy_measured.cali_fcorr1= %s\n", saved_dataset.cali_fcorr1 ? "true" : "false");
-
-//	float p_1 = get_energy_sensor_read(pwrao_1, &saved_dataset.vmin1, &saved_dataset.fcorr1, &saved_dataset.no_energy1, &saved_dataset.cali_fcorr1,Vref_pwr1);
-	float p_1 = get_energy_sensor_read(analog_1, &saved_dataset.vmin1, &saved_dataset.fcorr1, zerar, correction_enabled,Vref_pwr1,&dev_energy_1);
-//	float p_2 = get_energy_sensor_read(pwrao_2, &saved_dataset.vmin2, &saved_dataset.fcorr2, &saved_dataset.no_energy2, Vref_pwr2);
-    float p_2 = get_energy_sensor_read(analog_2, &saved_dataset.vmin2, &saved_dataset.fcorr2, zerar, correction_enabled,Vref_pwr2,&dev_energy_2);
-   
-//	i2c_driver_delete(I2C_MASTER_PORT_0);
-
-  if (dev_energy_1)
-     {
-	   int channel=0;
-	   p_1=roundf(p_1*10)/10; //arredondamento com 3 casas depois da vÃ­gula
-//	   printf("pwrÃ£o 1<<<<<<< = %.3f vmim = %f Zerado = %s \n", p_1, saved_dataset.vmin1, saved_dataset.no_energy1 ? "true" : "false");
-//	   printf("<<<<<<Data energy 1 = %f\n",p_1 );
-	   snprintf(saved_dataset.energy1, 8, "%0.3f",p_1);
-//	   printf(">>>>>>Data energy 1 = %s\n",saved_dataset.energy1 );
-	   save_energy_measurement(saved_dataset);
-       save_energy_data(channel);
-       if(has_calibration())
-         {
-			 scroll_down_display(saved_dataset, channel);
-
-		 }
-       }
-       else{
-		    printf(" O sensor de pwrão canal 0 não está instalado\n");
-		   }
-       
-       if(dev_energy_2)
-         {
-		  int channel=2;
-		  p_2=roundf(p_2*10)/10; //arredondamento com 3 casas depois da vÃ­gula
-//	      printf("pwrÃ£o 2<<<<<<< = %.3f vmim = %f Zerado = %d \n", p_2, saved_dataset.vmin2, saved_dataset.no_energy2);
-//          printf("<<<<<<Data energy 2 = %f\n",p_2 );
-	      snprintf(saved_dataset.energy2, 8, "%0.3f",p_2);
-//          printf(">>>>>>Data energy 2 = %s\n",saved_dataset.energy2 );
-          save_energy_measurement(saved_dataset);
-          save_energy_data(channel);
-          
-          if(has_calibration())
-             {
-			 
-			  scroll_down_display(saved_dataset, channel);
-			 
-		     }
-	     }
-	   else
-	   {
-		  printf(" O sensor de pwrão canal 2 não está instalado\n");
-	   }
-
+	ESP_LOGI("ENERGY", "[iter] ch=%u addr=%u (vou salvar)", channel, addr);
+    (void)addr;
+    iter_ctx_t *ctx = (iter_ctx_t*)user;
+    esp_err_t e = energy_meter_save_currents_by_channel(channel);
+    if (e == ESP_OK) ctx->saved++; else ctx->last = e;
+    return true;
 }
-
-static void energy_task(void *arg)
+esp_err_t energy_meter_save_registered_currents(void)
 {
-bool just_once = false;
-uint8_t status = 0;
-static bool passed = false;
+	_force_link_rs485_registry_adapter(); 
+    ESP_LOGI("ENERGY", "TESTE:energy_meter_save_registered_currents(void)");
 
-	
- }*/
+    // Mostra se estamos linkando para as funções reais ou as WEAK acima:
+    ESP_LOGI("ENERGY", "hooks: get_addr=%p get_phase=%p iterate=%p",
+             rs485_registry_get_channel_addr,
+             rs485_registry_get_channel_phase_count,
+             rs485_registry_iterate_configured);
 
+    iter_ctx_t ctx = { .last = ESP_OK, .saved = 0 };
+    int total = rs485_registry_iterate_configured(iter_cb, &ctx);
 
-//-------------------------------------------------------------------
-//
-/*void init_energy_task(void)
-{
+    ESP_LOGI("ENERGY", "iterate total=%d saved=%d last_err=%s",
+             total, ctx.saved, esp_err_to_name(ctx.last ? ctx.last : ESP_OK));
 
-
-	    xTaskCreatePinnedToCore(energy_task, "energy_task",TASK_STACK_SIZE, NULL, 2, &energy_TaskHandle,1);
-
+    if (total <= 0) {
+        ESP_LOGW("ENERGY", "Registry vazio ou WEAK iterate_configured em uso; nada a salvar.");
+        return ESP_ERR_NOT_FOUND;
+    }
+    return (ctx.saved > 0) ? ESP_OK : (ctx.last ? ctx.last : ESP_FAIL);
 }
 
 
-static void deinit_energy_task (void)
+esp_err_t energy_meter_read_all(uint8_t addr, energy_readings_t *out)
 {
-	if( energy_TaskHandle != NULL )
-  {
-     vTaskDelete( energy_TaskHandle );
-  }
-}*/
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    float I[3];
+    ESP_RETURN_ON_ERROR(energy_meter_read_currents(addr, I), TAG, "read");
+    out->i_a = I[0]; out->i_b = I[1]; out->i_c = I[2];
+    return ESP_OK;
+}

@@ -1,50 +1,46 @@
-/*
- * energy_meter.h
- *
- *  Created on: 20 de nov. de 2024
- *      Author: geopo
- */
+#ifndef ENERGY_METER_H
+#define ENERGY_METER_H
 
+#include <stdint.h>
+#include "esp_err.h"
 
-#ifndef PERIPHERALS_ENERGY_INCLUDE_ENERGY_METER_H_
-#define PERIPHERALS_ENERGY_INCLUDE_ENERGY_METER_H_
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "ads1015_reader.h"
+typedef struct {
+    float i_a, i_b, i_c;        /* A */
+    /* Reservas p/ futuro (tensão, potência, energia etc.) */
+    float v_a, v_b, v_c;
+    float p_act_total_w;
+    float freq_hz;
+    float pf_total;
+    float energy_kwh;
+} energy_readings_t;
 
-static uint32_t current_total_counter = 0;
+esp_err_t energy_meter_init(void);
 
-struct energy_measured {
-	float       V1;
-	float       V2;
-    char       last_power_1[8];
-    char       last_power_2[8];
-};
+/* Lê correntes A/B/C (A) do JSY-MK-333 por endereço Modbus. */
+esp_err_t energy_meter_read_currents(uint8_t addr, float outI[3]);
 
-struct energy_index_control {
-	uint32_t    last_write_energy_idx;
-    uint32_t    last_read_energy_idx;
-    uint32_t    total_counter;
-};
+/* Salva sempre as 3 fases (sub=1..3) em “canal.sub” → use só se quiser forçar trifásico. */
+esp_err_t energy_meter_save_currents(uint8_t channel, uint8_t addr);
 
-struct record_energy {
-    char        date[11];
-    char        time[9];
-    char        power_1[8];
-    char        power_2[8];
-};
+/* Versão “por cadastro”:
+   - pega endereço pelo canal no registry;
+   - consulta se é monofásico(1) ou trifásico(3);
+   - grava 1 linha "canal" (ex.: "3") ou 3 linhas "canal.sub" (ex.: "4.1/4.2/4.3") com DADOS=valor.
+*/
+esp_err_t energy_meter_save_currents_by_channel(uint8_t channel);
 
-void save_default_energy_index_control(void);
-bool has_energy_data_to_send(void);
+/* Best-effort: percorre todos cadastrados e salva correntes dos de energia. */
+esp_err_t energy_meter_save_registered_currents(void);
 
-bool has_record_energy_index_config(void);
-void save_energy_index_control(struct energy_index_control *config);
-void get_energy_index_control(struct energy_index_control *config);
+/* Futuro: leitura “completa”. */
+esp_err_t energy_meter_read_all(uint8_t addr, energy_readings_t *out);
 
-void save_energy_measured(struct energy_measured *config);
-void get_energy_measured(struct energy_measured *config);
+#ifdef __cplusplus
+}
+#endif
 
-void init_energy_task(void);
-
-
-
-#endif /* PERIPHERALS_ENERGY_INCLUDE_ENERGY_METER_H_ */
+#endif /* ENERGY_METER_H */

@@ -286,94 +286,117 @@ bool has_measurement_to_send(void)
 //=======================================================
 // SAVE data to Flash with channel
 //=======================================================
-esp_err_t save_record_sd(int channel, char *data)
+// ============================================================================
+// NOVO: Grava registro usando CANAL como string (ex.: "3" ou "4.2")
+// Mantém toda a política de índice/crescimento igual à save_record_sd(int,...)
+// ============================================================================
+esp_err_t save_record_sd_str(const char *channel_str, const char *data)
 {
-esp_err_t ret = ESP_OK;
- uint32_t write_idx = UNSPECIFIC_RECORD;
-	
-struct record_index_config idx_config = {0};
-  FILE *f=NULL;
-    // Protect critical section
+    if (!channel_str || !data) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t ret = ESP_OK;
+    uint32_t write_idx = UNSPECIFIC_RECORD;
+    struct record_index_config idx_config = {0};
+    FILE *f = NULL;
+
+    // Seção crítica igual à original
     xSemaphoreTake(sdMutex, portMAX_DELAY);
 
     ESP_LOGI(TAG, "Obtendo configuração de índice...");
-   ret = get_index_config(&idx_config);
-   if (ret != ESP_OK) {
+    ret = get_index_config(&idx_config);
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao obter configuração de índice: %d", ret);
         xSemaphoreGive(sdMutex);
         return ret;
     }
- 
-     if(idx_config.last_write_idx != write_idx)
-    {
-		printf(">>>>>>REC CONFIG TOTAL =%d\n", idx_config.total_idx);
-		if (idx_config.total_idx > 0) {
-            write_idx = (idx_config.last_write_idx + 1)%idx_config.total_idx;
-            }
-        else {write_idx = (idx_config.last_write_idx + 1)%1;
-            }   
-    }
-  	
-    if (write_idx == UNSPECIFIC_RECORD)
-       { 
-        if(has_enough_size())
-        {
-            f = fopen(record_file,"a");
-            if (f == NULL) {
-            ESP_LOGE(TAG, "Failed to open file for add");
-            xSemaphoreGive(sdMutex);
-            ret = ESP_FAIL;
-            }
+
+    // Mesma política de avanço do índice da sua save_record_sd(int,...)
+    if (idx_config.last_write_idx != write_idx) {
+        printf(">>>>>>REC CONFIG TOTAL =%d\n", idx_config.total_idx);
+        if (idx_config.total_idx > 0) {
+            write_idx = (idx_config.last_write_idx + 1) % idx_config.total_idx;
+        } else {
+            write_idx = (idx_config.last_write_idx + 1) % 1;
         }
-        else
-        {
-            f = fopen(record_file,"r+");
+    }
+
+    // APPEND se houver espaço, senão abre r+ e começa a sobreescrever do início dos dados
+    if (write_idx == UNSPECIFIC_RECORD) {
+        if (has_enough_size()) {
+            f = fopen(record_file, "a");
             if (f == NULL) {
-            ESP_LOGE(TAG, "Failed to open file for read");
-            xSemaphoreGive(sdMutex);
-            ret = ESP_FAIL;
+                ESP_LOGE(TAG, "Failed to open file for append");
+                xSemaphoreGive(sdMutex);
+                return ESP_FAIL;
+            }
+        } else {
+            f = fopen(record_file, "r+");
+            if (f == NULL) {
+                ESP_LOGE(TAG, "Failed to open file for read+write");
+                xSemaphoreGive(sdMutex);
+                return ESP_FAIL;
             }
             write_idx = 0;
-			  fseeko(f, RECORD_FILE_HEADER_SIZE, SEEK_SET);
-              fseeko(f, 0, SEEK_CUR);
-        } 
-        
-        fprintf(f," %s   %s     %1d       %s\n", get_date(), get_time(), channel, data);
-        ftell(f);
-        fclose(f);  
-    }
-    else
-    {
-        f = fopen(record_file,"r+");
-            if (f == NULL) {
-            ESP_LOGE(TAG, "Failed to open file for read");
-            ret = ESP_FAIL;
-            }
-
             fseeko(f, RECORD_FILE_HEADER_SIZE, SEEK_SET);
             fseeko(f, 0, SEEK_CUR);
- 
-        fprintf(f," %s   %s     %1d       %s\n", get_date(), get_time(), channel, data);
-      //  xSemaphoreGive(sdMutex);
-      }   
-        fclose(f);
-         
-         ESP_LOGI(TAG, "Record %s   %s     %1d       %s\n", get_date(), get_time(), channel, data);
- 
-   // Atualize a configuração de índice
-    if (ret == ESP_OK) {     
-        idx_config.last_write_idx = write_idx;
-        if(write_idx == UNSPECIFIC_RECORD){
-        idx_config.total_idx = idx_config.total_idx + 1;
-        current_index = idx_config.total_idx;
         }
-     }
- 
- ESP_LOGI("SDMMC", "Salvando configuração de índice...");  
- 
- ret = save_index_config(&idx_config);
-   xSemaphoreGive(sdMutex);
-   return ret;
+
+        // >>>>>>>> AQUI: CANAL como %s (string) <<<<<<<<
+        fprintf(f, " %s   %s     %s       %s\n", get_date(), get_time(), channel_str, data);
+        (void)ftell(f);
+        fclose(f);
+    } else {
+        f = fopen(record_file, "r+");
+        if (f == NULL) {
+            ESP_LOGE(TAG, "Failed to open file for read");
+            xSemaphoreGive(sdMutex);
+            return ESP_FAIL;
+        }
+        fseeko(f, RECORD_FILE_HEADER_SIZE, SEEK_SET);
+        fseeko(f, 0, SEEK_CUR);
+
+        // >>>>>>>> AQUI: CANAL como %s (string) <<<<<<<<
+        fprintf(f, " %s   %s     %s       %s\n", get_date(), get_time(), channel_str, data);
+        fclose(f);
+    }
+
+    ESP_LOGI(TAG, "Record %s   %s     %s       %s", get_date(), get_time(), channel_str, data);
+
+    // Atualiza config de índice (mesma lógica da sua função original)
+    if (ret == ESP_OK) {
+        idx_config.last_write_idx = write_idx;
+        if (write_idx == UNSPECIFIC_RECORD) {
+            idx_config.total_idx = idx_config.total_idx + 1;
+            current_index = idx_config.total_idx;
+        }
+    }
+
+    ESP_LOGI(TAG, "Salvando configuração de índice...");
+    ret = save_index_config(&idx_config);
+    xSemaphoreGive(sdMutex);
+    return ret;
+}
+
+esp_err_t save_record_sd(int channel, char *data)
+{
+    char chan_str[16];
+    snprintf(chan_str, sizeof(chan_str), "%d", channel);
+    return save_record_sd_str(chan_str, data);
+}
+
+esp_err_t save_record_sd_rs485(int channel, int subindex, const char *value_str)
+{
+    if (!value_str) value_str = "0";
+
+    // Monta CANAL string: "3" (mono, sub=0) ou "4.1/4.2/4.3" (tri, sub=1..3)
+    char chan_str[16];
+    if (subindex > 0)  snprintf(chan_str, sizeof(chan_str), "%d.%d", channel, subindex);
+    else               snprintf(chan_str, sizeof(chan_str), "%d",     channel);
+    
+     ESP_LOGI("SDMMC", "RS485 save: CANAL='%s'  VAL='%s'", chan_str, value_str);
+
+    // DADOS = somente o valor, sem "1=" etc.
+    return save_record_sd_str(chan_str, value_str);
 }
 
 esp_err_t read_record_sd(uint32_t *cursor_pos, struct record_data_saved* record_data)

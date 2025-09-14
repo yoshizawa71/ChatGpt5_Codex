@@ -1617,7 +1617,7 @@ void get_pressure_data(struct pressure_data *config)
 }
 
 //----------------------------------------------------------------
-
+/*
 void save_energy_measured(struct energy_measured *config)
 {
     cJSON *root = cJSON_CreateObject();
@@ -1700,7 +1700,7 @@ void get_energy_measured(struct energy_measured *config)
 
         xSemaphoreGive(file_mutex);
 }
-
+*/
 
 //----------------------------------------------------------------
 //	Verificação de dados do arquifo Little FS
