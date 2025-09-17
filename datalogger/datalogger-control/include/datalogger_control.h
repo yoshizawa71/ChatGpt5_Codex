@@ -296,25 +296,6 @@ bool is_led_enabled(void);
 void enable_led(bool en);
 //----------------------------*
 
-//FACTORY FUNCTIONS
-
-//xTaskHandle Factory_Config_TaskHandle = NULL;
-void Factory_Config_Task(void* pvParameters);
-void init_factory_task(void);
-void deinit_factory_task(void);
-
-void update_last_interaction(void);
-//void start_factory_routine(void);
-//void stop_factory_routine(void);
-TickType_t get_factory_routine_last_interaction(void);
-
-void init_ring_interruption(void);
-void ring_task_monitoring(void* arg);
-
-//SYSTEM FUNCTIONS
-void init_system(void);
-
-//RS485 Functions
 
 
 #endif

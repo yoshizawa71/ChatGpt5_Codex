@@ -1,6 +1,5 @@
-set(srcs 
-         "src/mqtt_tcp.c"
-         "src/wifi_softap_sta.c"
+set(srcs "src/wifi_softap_sta.c"
+         "src/wifi_diag.c"
       )
 
 idf_component_register(SRCS "${srcs}"

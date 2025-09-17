@@ -30,6 +30,7 @@ list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/connectivity/fieldbus/driver/JSY-MK-333
     ${CMAKE_SOURCE_DIR}/connectivity/fieldbus/driver/XY_MD02
     ${CMAKE_SOURCE_DIR}/connectivity/ip/access_network
+    ${CMAKE_SOURCE_DIR}/connectivity/ip/messaging
     ${CMAKE_SOURCE_DIR}/connectivity/services/tcp_log_console
     ${CMAKE_SOURCE_DIR}/connectivity/services/log_mux
     ${CMAKE_SOURCE_DIR}/connectivity/services/time_sync_sntp

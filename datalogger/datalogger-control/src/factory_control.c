@@ -1,9 +1,11 @@
+
+#include "factory_control.h"
 #include <string.h>
 #include <fcntl.h>
 #include <datalogger_control.h>
 #include "datalogger_driver.h"
 #include <time.h>
-
+#include "esp_timer.h"
 #include "sara_r422.h"
 #include "tcp_log_server.h"
 #include "modbus_rtu_master.h"
@@ -44,6 +46,10 @@
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
 
+#ifndef AP_SILENCE_WINDOW_S
+#define AP_SILENCE_WINDOW_S       20    // ajuste a gosto
+#endif
+
 // Define a flag for shutdown request
 bool server_shutdown_requested = false;
 static bool save_button_action = false;
@@ -53,6 +59,8 @@ extern bool first_factory_setup;
 extern QueueHandle_t xQueue_Factory_Control;
 bool Send_FactoryControl_Task_ON;
 bool Receive_Response_FactoryControl = false;
+
+//const uint32_t ap_silence_secs = 0; // Tempo de suspensão do Acess Point 
 
 #define MDNS_HOST_NAME  "datalogger"
 #define SERVER_BASE_PATH  "/esp_web_server"
@@ -76,7 +84,14 @@ typedef struct rest_server_context {
     char scratch[SCRATCH_BUFSIZE];
 } rest_server_context_t;
 
+typedef struct {
+    TickType_t ts; bool alive; uint8_t fc; esp_err_t err;
+    uint8_t fails; TickType_t backoff_until;
+    bool inflight;
+} ping_cache2_t;
+
 static const char *TAG = "Factory Control";
+
 
 static esp_err_t init_server_fs(void);
 static void init_mdns(void);
@@ -129,8 +144,6 @@ static esp_err_t rele_activate(httpd_req_t *req);
 static esp_err_t load_registers_get_handler(httpd_req_t *req);
 static esp_err_t delete_registers_get_handler(httpd_req_t *req);
 
-//static void update_last_interaction(void);
-
 // Variável global para armazenar o último tick de interação
 static TickType_t last_interaction_ticks;
 static time_t last_interaction;
@@ -158,16 +171,110 @@ static bool temp_zerar = false;
 static bool temp_fcorr = false;
 static bool rele_state = false; // Estado do relé
 
-void update_last_interaction(void)
+
+// ====== ESTADO ======
+static volatile int64_t s_last_interaction_us = 0;  // monotônico em µs
+static int64_t          s_last_exit_us        = 0;  // quando disparamos o EXIT
+static bool             s_single_shot_armed   = true; // habilitado no boot
+
+// “Quem chamou por último”:
+static char     s_last_ui_file[48];
+static char     s_last_ui_func[40];
+static int      s_last_ui_line = 0;
+static int64_t  s_last_ui_us   = 0;
+
+static volatile bool fc_user_interacted_since_exit = false;
+//-------------------------------------------
+static ping_cache2_t s_ping2[248] = {0};
+
+// Helper: extrai só o nome do arquivo (sem path)
+static const char *basefile(const char *path)
 {
-   last_interaction_ticks = xTaskGetTickCount();
-    ESP_LOGI(TAG, "Last interaction updated at tick: %u", last_interaction_ticks);
+    if (!path) return "?";
+    const char *b = path;
+    for (const char *p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') b = p + 1;
+    }
+    return b;
+}
+
+// Se STA ativo (high power), suspende AP por 30 s; senão, 0 (deep sleep cobre low power)
+static inline uint32_t compute_ap_silence_secs(void) {
+    return has_activate_sta() ? 20U : 0U;
+}
+
+static inline bool now_before(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(now - deadline) < 0;
+}
+//-------------------------------------------
+/*void update_last_interaction(void)
+{
+ 
+    s_last_interaction_us = esp_timer_get_time();
+    // Log mais útil agora em segundos:
+    ESP_LOGI(TAG, "Last interaction at %.3f s since boot",
+             (double)s_last_interaction_us / 1e6);
+}
+*/
+// ======= IMPLEMENTAÇÃO REAL (sem log): renomeada =======
+void update_last_interaction_real(void)
+{
+    s_last_interaction_us = esp_timer_get_time();
+     fc_user_interacted_since_exit = true;   // ← marca rearmamento permitido
+    // Se quiser manter um log curto aqui, pode; eu prefiro deixar sem para não poluir:
+    // ESP_LOGI(TAG, "Last interaction at %.3f s", (double)s_last_interaction_us/1e6);
+}
+
+// ======= WRAPPER com log e origem =======
+void update_last_interaction_tracked(const char *file, int line, const char *func)
+{
+    // Guarda a origem
+    const char *bf = basefile(file);
+    snprintf(s_last_ui_file, sizeof(s_last_ui_file), "%s", bf);
+    snprintf(s_last_ui_func, sizeof(s_last_ui_func), "%s", func ? func : "?");
+    s_last_ui_line = line;
+    s_last_ui_us   = esp_timer_get_time();
+
+    // Log enxuto (ajuste o nível para I/W se quiser menos ruído)
+    ESP_LOGW("FC/TRACE",
+             "update_last_interaction() from %s:%d (%s) @ %.3f s",
+             s_last_ui_file, s_last_ui_line, s_last_ui_func,
+             (double)s_last_ui_us / 1e6);
+
+    // Faz o que sempre fez:
+    update_last_interaction_real();
+}
+
+// Getter novo em µs (se você ainda não tinha)
+int64_t get_factory_routine_last_interaction_us(void)
+{
+    return s_last_interaction_us;
 }
 
 TickType_t get_factory_routine_last_interaction(void)
 {
-   return last_interaction_ticks;
+ //  return last_interaction_ticks;
+    const int64_t us = s_last_interaction_us;
+    // 1 tick = (1e6 / configTICK_RATE_HZ) µs
+    const int64_t us_per_tick = (1000000LL / configTICK_RATE_HZ);
+    return (TickType_t)(us / us_per_tick);
 }
+
+// Dump amigável do ÚLTIMO local que mexeu no “last interaction”
+void factory_dump_last_interaction_origin(void)
+{
+    ESP_LOGW("FC/TRACE",
+             "LAST caller of update_last_interaction(): %s:%d (%s) @ %.3f s",
+             s_last_ui_file[0] ? s_last_ui_file : "<none>",
+             s_last_ui_line,
+             s_last_ui_func[0] ? s_last_ui_func : "<none>",
+             (double)s_last_ui_us / 1e6);
+}
+/*int64_t get_factory_routine_last_interaction_us(void)
+{
+    return s_last_interaction_us;
+}*/
 
 static void start_factory_routine(void)
 {
@@ -271,6 +378,7 @@ static esp_err_t deinit_server_fs(void)
     }
 }
 */
+
 static esp_err_t start_server(void)
 {
     super_user_logged = false;
@@ -570,13 +678,25 @@ static esp_err_t stop_server(httpd_handle_t server)
 	    else
 	       {
 	    	printf("*** Stop server Success ***\n");
+	    	server = NULL;
 	    	return ESP_OK;
 	        }
 	}
 
 	return ESP_ERR_INVALID_ARG;
 }
-
+//---------------------------------------
+void wifi_portal_on_ap_start(void) {
+    if (server == NULL) {
+        ESP_LOGI(TAG, "AP_START: HTTP server não estava rodando — iniciando.");
+        start_server();
+    } else {
+        ESP_LOGI(TAG, "AP_START: HTTP server já ativo.");
+    }
+    
+        ap_active = true;                // reflete o estado do AP para o front-end
+}
+//---------------------------------------
 // --- Console TCP: wrappers simples para ligar/desligar em um lugar só ---
 static void console_tcp_enable(uint16_t port)
 {
@@ -1229,34 +1349,51 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
-    // --- Rate-limit/cache simples (por endereço) ---
-    typedef struct { TickType_t ts; bool alive; uint8_t fc; esp_err_t err; } ping_cache_t;
-    static ping_cache_t s_ping_cache[248] = {0}; // 1..247
-    const TickType_t MIN_INTERVAL = pdMS_TO_TICKS(300);
+    const TickType_t PER_ADDR_MIN = pdMS_TO_TICKS(700);   // era 300 ms
+    const TickType_t GLOBAL_MIN   = pdMS_TO_TICKS(150);   // simples amortecedor global
+
+    static TickType_t s_global_last = 0;
 
     char qbuf[64], param[16];
-    int ch = 0, addr = 0;
+    int addr = 0;
     int qlen = httpd_req_get_url_query_len(req) + 1;
     if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
-            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) ch   = atoi(param);
-            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK) addr = atoi(param);
+            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
+                addr = atoi(param);
         }
     }
     if (addr <= 0 || addr > 247) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"type\":\"\",\"subtype\":\"\",\"driver\":\"\",\"exception\":false,\"error\":\"invalid_address\"}");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
 
-    // cache hit recente?
+    // Se o AP estiver suspenso, responda sem acessar o barramento
+    if (!wifi_ap_is_running()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
+        return ESP_OK;
+    }
+
     TickType_t now = xTaskGetTickCount();
-    ping_cache_t *C = &s_ping_cache[addr];
-    if (C->ts && (now - C->ts) < MIN_INTERVAL) {
+    ping_cache2_t *C = &s_ping2[addr];
+
+    // Circuit-breaker por backoff
+    if (C->backoff_until && now_before(now, C->backoff_until)) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
+        return ESP_OK;
+    }
+
+    // Rate limit por endereço e global
+    if ((C->ts && (now - C->ts) < PER_ADDR_MIN) || (s_global_last && (now - s_global_last) < GLOBAL_MIN)) {
+        // devolve cache
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
-        cJSON_AddStringToObject(root, "type", ""); cJSON_AddStringToObject(root, "subtype", ""); cJSON_AddStringToObject(root, "driver", "");
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
@@ -1265,21 +1402,44 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    (void) modbus_master_init();
+    // Evita reentrância: se já tem ping em voo para esse endereço, devolve cache
+    if (C->inflight) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "alive", C->alive);
+        cJSON_AddNumberToObject(root, "used_fc", C->fc);
+        cJSON_AddBoolToObject(root, "exception", false);
+        char *json = cJSON_PrintUnformatted(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+        free(json); cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    C->inflight = true;
+    s_global_last = now;
+
+ //   (void) modbus_master_init();
 
     bool alive = false; uint8_t used_fc = 0x00;
-    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
-
-    // atualiza cache
+    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario
+      
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
+    C->inflight = false;
 
-    ESP_LOGI("RS485_PING", "light: addr=%d alive=%d fc=0x%02X err=%s",
-             addr, (int)alive, used_fc, esp_err_to_name(ret));
+    // Circuit-breaker simples: se falhar 5x seguidas, faz backoff de 3 s
+    if (ret != ESP_OK || !alive) {
+        if (C->fails < 250) C->fails++;
+        if (C->fails >= 5) {
+            C->backoff_until = C->ts + pdMS_TO_TICKS(3000);
+        }
+    } else {
+        C->fails = 0;
+        C->backoff_until = 0;
+    }
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "alive", alive);
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
-    cJSON_AddStringToObject(root, "type", ""); cJSON_AddStringToObject(root, "subtype",""); cJSON_AddStringToObject(root, "driver","");
     cJSON_AddBoolToObject(root, "exception", false);
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -1287,7 +1447,6 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     free(json); cJSON_Delete(root);
     return ESP_OK;
 }
-
 
 
 // ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====
@@ -1824,16 +1983,17 @@ static void factory_exit_common(uint32_t ap_silence_secs)
     save_system_config_data_time();
 
     if (has_activate_sta()) {
-        ESP_LOGI(TAG, "Saída: STA ativo → suspendendo AP por %u s", (unsigned)ap_silence_secs);
-        // >>> Não toque em ap_active nem chame esp_wifi_set_mode() aqui <<<
-        wifi_ap_suspend_temporarily(ap_silence_secs);
+		wifi_ap_suspend_temporarily(ap_silence_secs);
+        ESP_LOGI(TAG, "SaÃ­da: STA ativo â†’ suspendendo AP por %u s", (unsigned)ap_silence_secs);
+        // >>> NÃ£o toque em ap_active nem chame esp_wifi_set_mode() aqui <<<
+        
     } else {
         ESP_LOGI(TAG, "Saída: STA inativo → deep sleep");
         xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);
     }
 
     // Evita re-timeout imediato: zera o cronômetro de inatividade
-    update_last_interaction();
+ //   update_last_interaction();
 
     // Reboot opcional pós-setup inicial (mantém seu comportamento)
     if (first_factory_setup && has_factory_config()) {
@@ -1844,10 +2004,15 @@ static void factory_exit_common(uint32_t ap_silence_secs)
     }
 }
 
+// Suspensão única do AP:
+// - Se STA estiver ativo (high power): suspende AP por 30 s e depois religa.
+// - Se STA NÃO estiver ativo (low power): 0 s → caminho de deep-sleep já cobre desligar total.
+/*static inline uint32_t compute_ap_silence_secs(void) {
+    return has_activate_sta() ? 30U : 0U;
+}*/
 
 static esp_err_t exit_device_post_handler(httpd_req_t *req)
 {
-    const uint32_t ap_silence_secs = 30; // ajuste se quiser (ex.: 30)
 
     if (has_activate_sta()) {
         httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
@@ -1859,8 +2024,11 @@ static esp_err_t exit_device_post_handler(httpd_req_t *req)
     httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Usa o caminho unificado
-    factory_exit_common(ap_silence_secs);
+    // Marca saída iniciada pelo usuário (útil para lógica de "uma vez só" no Wi-Fi)
+     user_initiated_exit = true;
+    // Usa o caminho unificado com suspensão condicional do AP
+    factory_exit_common(compute_ap_silence_secs());
+
     return ESP_OK;
 }
 
@@ -2375,20 +2543,26 @@ static esp_err_t delete_registers_get_handler(httpd_req_t *req)
 static esp_err_t ping_handler(httpd_req_t *req)
 {
 #if ENABLE_PING_LOG
-ESP_LOGI("PING", "Recebido /ping do front");
+    ESP_LOGI("PING", "Recebido /ping do front");
 #endif
+    // Importante: NÃO chamar update_last_interaction() aqui.
+    // Ping não deve manter a sessão "viva" artificialmente.
 
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) == ESP_OK) {
-        if ((mode & WIFI_MODE_AP) == 0 && !user_initiated_exit) {
-            ESP_LOGW("PING", "SoftAP caiu! Religando imediatamente...");
-              wifi_ap_force_enable();
-        }
-    } else {
-        ESP_LOGE("PING", "Falha em esp_wifi_get_mode()");
-    }
+    bool ap_running   = wifi_ap_is_running();
+    bool ap_suspended = wifi_ap_is_suspended();          // pode ser stub (false)
+    uint32_t resume_in = ap_suspended ? wifi_ap_seconds_to_resume() : 0;  // pode ser stub (0)
+    uint32_t sta_count = wifi_ap_get_sta_count();        // pode ser stub (0)
 
-    httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"ok\":true,\"ap_running\":%s,\"ap_suspended\":%s,\"resume_in\":%u,\"sta_count\":%u}",
+        ap_running ? "true" : "false",
+        ap_suspended ? "true" : "false",
+        resume_in,
+        sta_count);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
     return ESP_OK;
 }
 //----------------------------------------------------------
@@ -2447,28 +2621,46 @@ void Factory_Config_Task(void* pvParameters)
 	        
  while(1)
 	  {
-        TickType_t now_ticks = xTaskGetTickCount();
-        TickType_t last_interaction = get_factory_routine_last_interaction();                 
-        TickType_t tick_diff = (now_ticks >= last_interaction) ? (now_ticks - last_interaction) : 0;
         
+    const int64_t now_us        = esp_timer_get_time();
+    const int64_t last_us       = get_factory_routine_last_interaction_us();
+    const int64_t diff_us       = (last_us > 0) ? (now_us - last_us) : 0;
+    const int64_t timeout_us    = (int64_t)FACTORY_CONFIG_TIMER * 1000000LL;
 
-// Re-armar o guard quando há atividade OU quando o AP já voltou
-if (tick_diff < pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000) || wifi_ap_is_running()) {
+if (fc_user_interacted_since_exit) {
     exit_already_fired = false;
+    fc_user_interacted_since_exit = false;
 }
-                            
-if ((tick_diff >= pdMS_TO_TICKS(FACTORY_CONFIG_TIMER * 1000)) && Send_FactoryControl_Task_ON) {
-    if (!exit_already_fired) {
-        // Só dispara se o AP ainda estiver ON (evita reprogramar durante a suspensão)
-        if (!has_activate_sta() || wifi_ap_is_running()) {
-            ESP_LOGI(TAG, "Timeout de %d s → saída unificada", FACTORY_CONFIG_TIMER);
-            factory_exit_common(/*ap_silence_secs=*/30);   // ou 90; você decide
-            exit_already_fired = true;
-        } else {
-            ESP_LOGI(TAG, "Timeout atingido, mas AP suspenso — não reprogramar");
+
+     
+         // 1) Se JÁ disparamos o single-shot, só rearmar quando:
+    //    (a) o AP já tiver voltado, e (b) houve nova interação DEPOIS do EXIT.
+    if (!s_single_shot_armed) {
+        if (wifi_ap_is_running()) {
+            if (last_us > s_last_exit_us) {
+                s_single_shot_armed = true;
+                ESP_LOGI(TAG, "Single-shot rearmado (AP ativo e nova interação).");
+            }
         }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        continue; // enquanto desarmado, não reavalia timeout
+       }
+       
+//printf(">>>Tempo corrido -->> %lld\n", diff_us);
+
+    // 2) Aguardando INATIVIDADE: dispara UMA ÚNICA VEZ
+    if (Send_FactoryControl_Task_ON && diff_us >= timeout_us) {
+		factory_dump_last_interaction_origin();
+        const uint32_t secs = compute_ap_silence_secs(); // ou AP_SILENCE_WINDOW_S
+        ESP_LOGI(TAG, "Timeout de %d s → saída unificada (single-shot AP=%u s)",
+                 FACTORY_CONFIG_TIMER, (unsigned)secs);
+
+        factory_exit_common(secs);  // ← aqui você já suspende AP só uma vez
+        s_last_exit_us      = now_us;
+        s_single_shot_armed = false;   // trava até AP voltar + nova interação
     }
-}
+
+    vTaskDelay(pdMS_TO_TICKS(100));
                                           
        if (server_shutdown_requested) {
 		   printf("xQueue_Factory_Control -->>>>send\n");
@@ -2508,9 +2700,10 @@ vTaskDelay(pdMS_TO_TICKS(1000));
 
 void init_factory_task(void)
 {
+	user_initiated_exit = false;  // para não bloquear religamento do AP
 	start_wifi_ap_sta();
     // Inicia o console TCP (AP: 192.168.4.1:3333; em STA use o IP do roteador)
-    console_tcp_enable(3333);
+//    console_tcp_enable(3333); -> comentado temporariamente
     ESP_LOGI("SELFTEST", "Hello TCP!");
 	if (Factory_Config_TaskHandle == NULL)
 	   {

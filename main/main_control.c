@@ -13,12 +13,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "main.h"
+#include "reboot_test.h"
 #include "time.h"
 #include <sys/time.h>
 #include <datalogger_control.h>
 #include "sara_r422.h"
 #include "tcp_log_server.h"
-#include "comm_wifi.h"
+//#include "comm_wifi.h"
 #include "datalogger_driver.h"
 
 #include"pulse_meter.h"
@@ -35,6 +36,7 @@
 #include "led_blink_control.h"
 
 #include "tcp_log_server.h"  
+#include "mqtt_publisher.h"
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 
@@ -407,24 +409,35 @@ if ((get_wakeup_cause() == WAKE_UP_EXTERN_SENSOR)&& counter<=7)
 if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load_last_processed_minute())&&has_device_active())// acrescentado para não enviar duas vezes
    {
 	save_last_processed_minute(get_time_minute());  
+	
     ESP_LOGI("Save Sensor Data", "TESTE: vou chamar save_sensor_data()");
+    
 	uint8_t save_ret = save_sensor_data();
 	if (save_ret != SAVE_OK) {
     ESP_LOGW(TAG, "save_sensor_data falhou com máscara 0x%02x", save_ret);
 }
 
-ESP_LOGI("ENERGY", "TESTE: vou chamar energy_meter_save_registered_currents()");
-save_sensor_data_rs485(); 
-/*extern esp_err_t energy_meter_save_currents(uint8_t channel, uint8_t addr);
-ESP_LOGI("ENERGY", "FORCE: ch=3 addr=1");
-energy_meter_save_currents(3, 1); // grava 3.1/3.2/3.3*/
+/*log_reset_reason_on_boot();
+test_trigger_reboot(REBOOT_PANIC, 10000);*/
 
+//ESP_LOGI("ENERGY", "TESTE: vou chamar energy_meter_save_registered_currents()");
+//save_sensor_data_rs485(); // Temporario
 	
-  if(has_measurement_to_send()&&!Receive_NetConnect_Task_ON &&!wifi_on&&(has_network_http_enabled()||has_network_mqtt_enabled()))
+  if(has_measurement_to_send())
 	 {
-           printf(">>>>Tem dados para enviar<<<\n");
-           lte_send_data_to_server();
-	     }
+		 if (has_network_http_enabled()||has_network_mqtt_enabled()){
+			 
+			 if (has_activate_sta()){
+				 mqtt_wifi_publish_now();
+			     } 
+			 else{
+				   if (!Receive_NetConnect_Task_ON &&!wifi_on){
+					   lte_send_data_to_server();
+				      }
+				  } 
+		     }
+       printf(">>>>Tem dados para enviar<<<\n");
+	  }
     
     if (!ap_active)
     {wifi_on=false;}

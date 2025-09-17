@@ -123,9 +123,9 @@ struct network_config {
     char        data_server_url[50];
     uint16_t    data_server_port;
     char        data_server_path[30];
-    char        user[30];
-    char        token[30];
-    char        pw[30];
+    char        user[40];
+    char        token[40];
+    char        pw[40];
     char        mqtt_url[50];
     uint16_t    mqtt_port;
     char        mqtt_topic[30];   

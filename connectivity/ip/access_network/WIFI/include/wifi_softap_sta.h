@@ -2,7 +2,6 @@
 // Interface pública para controle robusto AP+STA no ESP-IDF.
 // - start_wifi_ap_sta(): inicializa netifs, Wi-Fi e sobe em modo AP+STA
 // - stop_wifi_ap_sta():  desliga tudo (use só para “parar geral”)
-// - wifi_ap_suspend_temporarily(): silencia o AP por N segundos (mantém STA)
 // - wifi_ap_force_enable():        religa o AP imediatamente (AP+STA)
 // - wifi_ap_force_disable():       desliga o AP mantendo STA
 // - wifi_ap_is_running():          consulta se o SoftAP está ativo
@@ -11,7 +10,6 @@
 // * Se STA NÃO estiver ativo (has_activate_sta() == false), seu FC pode ir
 //   para deep sleep normalmente. Este driver não chama deep sleep.
 // * Se STA estiver ativo e você precisar “devolver a internet” ao usuário
-//   (Exit/timeout do front), chame wifi_ap_suspend_temporarily(segundos).
 //   O AP volta sozinho após o período ou via wifi_ap_force_enable().
 //
 // Observação: este header NÃO expõe helpers internos como get_ssid_*() ou
@@ -27,6 +25,9 @@
 extern "C" {
 #endif
 
+//bool     wifi_ap_single_shot_done(void);
+// Utilitário: AP está ativo? (modo contém AP)
+bool     wifi_ap_is_running(void);
 /**
  * @brief Inicia Wi-Fi em modo AP+STA.
  *
@@ -90,6 +91,15 @@ void wifi_ap_force_disable(void);
 bool wifi_ap_is_running(void);
 
 void wifi_sta_mark_intentional_disconnect(bool enable);
+
+uint32_t wifi_ap_get_sta_count(void);
+
+bool     wifi_ap_is_suspended(void);        
+uint32_t wifi_ap_seconds_to_resume(void);  
+
+void wifi_diag_install(void);
+
+void     wifi_ap_single_shot_suspend(uint32_t seconds);
 
 #ifdef __cplusplus
 }

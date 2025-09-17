@@ -1,5 +1,7 @@
 #include <datalogger_control.h>
 #include "battery_monitor.h"
+#include "factory_control.h"
+#include "mqtt_publisher.h"
 #include "sdkconfig.h"
 #include "datalogger_driver.h"
 #include "esp_log.h"
@@ -218,7 +220,7 @@ void app_main(void)
 	wake_up_cause_t wkupcause = check_wakeup_cause();
 	ulp_system_stable = 1;
 	
-	logmux_early_init();
+//	logmux_early_init(); Comentado temporariamente
 	esp_err_t ret;
 
 ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
@@ -259,6 +261,7 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
 
      blink_init();
      
+  mqtt_publisher_init();   
 
 /*
     listFilesInDir();

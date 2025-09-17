@@ -16,6 +16,7 @@ idf_component_register(SRCS "main.c" "main_control.c"
                              pressure
                              rele
                              tcp_log_console
+                             mqtt_wifi
                              system
                              )
                              
