@@ -1,8 +1,9 @@
 /*
  * rs485_hw.h
  *
- *  Created on: 9 de ago. de 2025
- *      Author: geopo
+ * Camada fina de RS-485 com controle manual de DE/RE via GPIO
+ * e UART do ESP-IDF. Projetada para trabalhar com esp-modbus
+ * ou acesso RTU direto, e para integrar com um "session guard".
  */
 
 #ifndef COMMUNICATIONS_RS485_INCLUDE_RS485_HW_H_
@@ -27,9 +28,6 @@ esp_err_t rs485_hw_init(const rs485_hw_cfg_t *cfg);
 
 esp_err_t rs485_hw_tx(const uint8_t *data, size_t len, TickType_t tmo);
 esp_err_t rs485_hw_rx(uint8_t *data, size_t max_len, size_t *out_len, TickType_t tmo);
-
-
-
 
 
 #endif /* COMMUNICATIONS_RS485_INCLUDE_RS485_HW_H_ */

@@ -1,10 +1,12 @@
+#include "ifdef_features.h"
 #include "energy_meter.h"
-
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "esp_log.h"
 #include "modbus_rtu_master.h"
+#include "modbus_guard_session.h"
+
 
 extern int rs485_registry_adapter_link_anchor;
 static inline void _force_link_rs485_registry_adapter(void) {
@@ -59,9 +61,10 @@ static inline esp_err_t read_currents_fc04(uint8_t addr, uint16_t raw[3])
 
 esp_err_t energy_meter_init(void)
 {
-    esp_err_t err = modbus_master_init();
+  /*  esp_err_t err = modbus_master_init();
     if (err != ESP_OK) ESP_LOGE(TAG, "modbus_master_init() = %s", esp_err_to_name(err));
-    return err;
+    return err;*/
+    return ESP_OK;
 }
 
 static inline void convert_raw_currents(const uint16_t raw[3], float outI[3])
@@ -74,18 +77,44 @@ static inline void convert_raw_currents(const uint16_t raw[3], float outI[3])
 esp_err_t energy_meter_read_currents(uint8_t addr, float outI[3])
 {
     if (!outI) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(energy_meter_init(), TAG, "init");
 
+    #if !CONFIG_MODBUS_ENABLE
+    // Quando Modbus estiver desativado (kill-switch), falhe explicitamente:
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+    
     uint16_t raw[3] = {0};
-    esp_err_t err = read_currents_fc03(addr, raw);
-    if (err != ESP_OK) {
-        esp_err_t err2 = read_currents_fc04(addr, raw);
-        if (err2 != ESP_OK) return err2;
-        err = err2;
+    esp_err_t err = ESP_OK;
+
+    // Janela curta e exclusiva para a transação Modbus
+    MB_SESSION_WITH(pdMS_TO_TICKS(500)) {
+        // 1ª tentativa: FC03 (Holding)
+        err = read_currents_fc03(addr, raw);
+        if (err == ESP_ERR_TIMEOUT) {
+            vTaskDelay(pdMS_TO_TICKS(150));               // retry curto
+            err = read_currents_fc03(addr, raw);
+        }
+        // Fallback: FC04 (Input) se FC03 falhar
+        if (err != ESP_OK) {
+            esp_err_t e2 = read_currents_fc04(addr, raw);
+            if (e2 == ESP_ERR_TIMEOUT) {
+                vTaskDelay(pdMS_TO_TICKS(150));           // retry curto
+                e2 = read_currents_fc04(addr, raw);
+            }
+            err = e2;
+        }
+    } // sessão fecha aqui, garantindo flush+idle
+
+    if (err == ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "sem resposta do escravo addr=%u (timeout)", addr);
+        return err;
     }
+    if (err != ESP_OK) return err;
+
     convert_raw_currents(raw, outI);
     ESP_LOGI(TAG, "addr=%u  I: A=%.3f  B=%.3f  C=%.3f", addr, outI[0], outI[1], outI[2]);
     return ESP_OK;
+    
 }
 
 /* Força salvar 3 linhas (3.1..3.3) */

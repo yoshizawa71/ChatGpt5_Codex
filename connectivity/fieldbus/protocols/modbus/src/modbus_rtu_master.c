@@ -200,7 +200,6 @@ esp_err_t modbus_master_deinit(void)
 
 
 
-
 /* =================== Tarefa leitora interna (DESABILITADA) ===================
  * Para manter o módulo 100% desacoplado de "slaves", não criamos nenhuma task aqui.
  * Caso um dia queira reativar uma leitura cíclica interna, substitua esta função.

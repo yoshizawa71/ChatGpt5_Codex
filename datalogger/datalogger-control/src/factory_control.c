@@ -1,4 +1,4 @@
-
+#include "ifdef_features.h" 
 #include "factory_control.h"
 #include <string.h>
 #include <fcntl.h>
@@ -7,6 +7,7 @@
 #include <time.h>
 #include "esp_timer.h"
 #include "sara_r422.h"
+#include "sleep_preparation.h"
 #include "tcp_log_server.h"
 #include "modbus_rtu_master.h"
 #include "log_mux.h"
@@ -32,7 +33,6 @@
 #include "esp_wifi.h"
 
 #include "ff.h"
-//#include "ulp_datalogger-control.h"
 #include "sleep_control.h"
 
 #include "pressure_calibrate.h"
@@ -42,6 +42,10 @@
 #include "rs485_registry.h"
 #include "xy_md02_driver.h"
 #include "rs485_manager.h"
+#include "rs485_hw.h" 
+#include "freertos/FreeRTOS.h"
+#include "modbus_guard_session.h"
+#include <stdatomic.h>
 
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
@@ -50,8 +54,28 @@
 #define AP_SILENCE_WINDOW_S       20    // ajuste a gosto
 #endif
 
+#if FC_TRACE_INTERACTION
+#warning "FC_TRACE_INTERACTION = 1 (este arquivo)"
+#else
+#warning "FC_TRACE_INTERACTION = 0 (este arquivo)"
+#endif
+
+#if CONFIG_MODBUS_ENABLE
+  #include "modbus_rtu_master.h"
+  #include "rs485_manager.h"
+#endif
+
+
+#if FC_TRACE_INTERACTION
+  #define update_last_interaction() \
+      update_last_interaction_tracked(__FILE__, __LINE__, __func__)
+#else
+  #define update_last_interaction() \
+      update_last_interaction_real()
+#endif
+
 // Define a flag for shutdown request
-bool server_shutdown_requested = false;
+//bool server_shutdown_requested = false;
 static bool save_button_action = false;
 bool user_initiated_exit = false;
 
@@ -91,7 +115,6 @@ typedef struct {
 } ping_cache2_t;
 
 static const char *TAG = "Factory Control";
-
 
 static esp_err_t init_server_fs(void);
 static void init_mdns(void);
@@ -186,7 +209,10 @@ static int64_t  s_last_ui_us   = 0;
 static volatile bool fc_user_interacted_since_exit = false;
 //-------------------------------------------
 static ping_cache2_t s_ping2[248] = {0};
-
+/*
+static atomic_bool s_shutting_down = false;
+static portMUX_TYPE s_shutdown_mux = portMUX_INITIALIZER_UNLOCKED;
+*/
 // Helper: extrai só o nome do arquivo (sem path)
 static const char *basefile(const char *path)
 {
@@ -207,6 +233,25 @@ static inline bool now_before(uint32_t now, uint32_t deadline)
 {
     return (int32_t)(now - deadline) < 0;
 }
+
+/*static inline bool shutdown_try_begin(void)
+{
+    bool allowed = false;
+    portENTER_CRITICAL(&s_shutdown_mux);
+    if (!s_shutting_down) {
+        s_shutting_down = true;
+        allowed = true;
+    }
+    portEXIT_CRITICAL(&s_shutdown_mux);
+    return allowed;
+}
+
+static inline bool is_shutting_down(void)
+{
+    // leitura sem lock é ok para “read-mostly”
+    return s_shutting_down;
+}
+*/
 //-------------------------------------------
 /*void update_last_interaction(void)
 {
@@ -226,6 +271,13 @@ void update_last_interaction_real(void)
     // ESP_LOGI(TAG, "Last interaction at %.3f s", (double)s_last_interaction_us/1e6);
 }
 
+// Interação "de fundo": não seta o token, só atualiza o relógio.
+void update_last_interaction_background(void)
+{
+    s_last_interaction_us = esp_timer_get_time();
+    // NÃO mexe em fc_user_interacted_since_exit
+}
+
 // ======= WRAPPER com log e origem =======
 void update_last_interaction_tracked(const char *file, int line, const char *func)
 {
@@ -236,12 +288,14 @@ void update_last_interaction_tracked(const char *file, int line, const char *fun
     s_last_ui_line = line;
     s_last_ui_us   = esp_timer_get_time();
 
+#if FC_TRACE_INTERACTION
     // Log enxuto (ajuste o nível para I/W se quiser menos ruído)
     ESP_LOGW("FC/TRACE",
              "update_last_interaction() from %s:%d (%s) @ %.3f s",
              s_last_ui_file, s_last_ui_line, s_last_ui_func,
              (double)s_last_ui_us / 1e6);
 
+#endif
     // Faz o que sempre fez:
     update_last_interaction_real();
 }
@@ -560,7 +614,7 @@ httpd_register_uri_handler(server, &rele_post_uri);
     
 //----------------------------------------------------------
 //           RS485 Config
-
+#if CONFIG_MODBUS_ENABLE
 // ---------------- RS485 CONFIG GET ----------------
     httpd_uri_t rs485_config_get_uri = {
         .uri      = "/rs485ConfigGet",
@@ -608,7 +662,8 @@ httpd_uri_t rs485_cfg_delete_uri = {
     .user_ctx = rest_context
 };
 httpd_register_uri_handler(server, &rs485_cfg_delete_uri);
-  
+
+#endif  
 //----------------------------------------------------------
 //           Delete the file
 //----------------------------------------------------------
@@ -701,9 +756,10 @@ void wifi_portal_on_ap_start(void) {
 static void console_tcp_enable(uint16_t port)
 {
     start_tcp_log_server_task(port);        // seu servidor TCP (não bloqueante)
-    logmux_set_tcp_writer(tcp_log_vprintf); // writer do tcp_log_server.c
+//    logmux_set_tcp_writer(tcp_log_vprintf); // writer do tcp_log_server.c
+    logmux_init(tcp_log_vprintf);
     logmux_enable_tcp(true);                // envia logs para TCP
-    logmux_enable_uart(true);              // mantém UART0 muda
+    logmux_enable_uart(false);              // mantém UART0 muda
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
     
 }
@@ -1071,6 +1127,7 @@ static esp_err_t config_operation_post_handler(httpd_req_t *req)
 // GET /rs485ConfigGet  -> devolve JSON { "sensors": [...] }
 // 1) se existir RS485_MAP_UI_PATH (JSON), entrega-o (contém type/subtype);
 // 2) senão, carrega do binário e monta JSON com type/subtype vazios.
+#if CONFIG_MODBUS_ENABLE
 static esp_err_t rs485_config_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
@@ -1420,8 +1477,13 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
  //   (void) modbus_master_init();
 
-    bool alive = false; uint8_t used_fc = 0x00;
-    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario
+/*    bool alive = false; uint8_t used_fc = 0x00;
+    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario*/
+      
+    bool alive = false; uint8_t used_fc = 0x00; esp_err_t ret = ESP_OK;
+    MB_SESSION_WITH(pdMS_TO_TICKS(300)) {
+        ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
+    }  
       
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
     C->inflight = false;
@@ -1571,12 +1633,13 @@ for (size_t i = 0; i < wr; ++i) {
     return ESP_OK;
 }
 
-
-
+#endif
 //--------------------------------------------------------------------
 static esp_err_t config_maintenance_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "--- INÍCIO /configMaintGet ---");
-    update_last_interaction();
+    
+   // update_last_interaction();
+   update_last_interaction_background();
     
         // Montagem do JSON de resposta normal
 cJSON *root = cJSON_CreateObject();
@@ -1677,6 +1740,7 @@ cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ativar_cali", has_calibration());
 
     if (has_calibration()) {
+		update_last_interaction();
         bool sensor_ok = false;
         
                float pressure = get_calibrated_pressure(sensor_em_calibracao,
@@ -1962,26 +2026,44 @@ static esp_err_t rele_activate(httpd_req_t *req)
 
 //-----------------------------------------------
 
-// Saída unificada do front: STA ativo → silencia AP por N s; STA inativo → deep sleep.
-// Se req_optional != NULL, responde o HTTP.
-#include "wifi_softap_sta.h"   // garante acesso a wifi_ap_suspend_temporarily(), wifi_ap_is_running()
-
-/* Guard opcional (defina no topo do arquivo se ainda não tiver) */
-// static bool exit_already_fired = false;
-
 /**
  * Saída unificada do front:
  * - STA ativo  → silencia o AP por N segundos (ele volta sozinho depois).
  * - STA inativo→ inicia deep sleep.
  * Também registra a interação para evitar retrigger imediato do timeout.
  */
+ 
+static inline void notify_timemanager_factory_off(void)
+{
+    Send_FactoryControl_Task_ON = false;
+    if (xQueue_Factory_Control) {
+        bool off = false;                          // o TimeManager espera "false"
+        (void)xQueueSend(xQueue_Factory_Control, &off, 0);
+    }
+}
+
+static void shutdown_task(void* pvParameters) {
+
+    user_initiated_exit = true;
+  
+            // Stop Factory server
+    stop_factory_server();
+    printf("Servidor HTTP parado.\n");
+    
+     sleep_prepare(true);                          
+     printf(">>>>>>>>>Shutdown finished<<<<<<<<\n");
+     notify_timemanager_factory_off();   // fila para TimeManager dormir
+     vTaskDelay(pdMS_TO_TICKS(300));
+     vTaskDelete(NULL);
+}
+
 static void factory_exit_common(uint32_t ap_silence_secs)
 {
     user_initiated_exit = true;
     clear_display();
     vTaskDelay(pdMS_TO_TICKS(150));
     save_system_config_data_time();
-
+    
     if (has_activate_sta()) {
 		wifi_ap_suspend_temporarily(ap_silence_secs);
         ESP_LOGI(TAG, "SaÃ­da: STA ativo â†’ suspendendo AP por %u s", (unsigned)ap_silence_secs);
@@ -1990,30 +2072,20 @@ static void factory_exit_common(uint32_t ap_silence_secs)
     } else {
         ESP_LOGI(TAG, "Saída: STA inativo → deep sleep");
         xTaskCreate(shutdown_task, "shutdown_task", 6144, NULL, 5, NULL);
-    }
-
-    // Evita re-timeout imediato: zera o cronômetro de inatividade
- //   update_last_interaction();
-
-    // Reboot opcional pós-setup inicial (mantém seu comportamento)
-    if (first_factory_setup && has_factory_config()) {
+        deinit_factory_task();
+    } 
+    
+     if (first_factory_setup && has_factory_config()) {
         ESP_LOGI(TAG, "### RESTART ###");
-        save_system_config_data_time();
+        vTaskDelay(pdMS_TO_TICKS(50));
         first_factory_setup = false;
-        esp_restart();
-    }
+        esp_restart();                 // ← por último
+    }  
 }
-
-// Suspensão única do AP:
-// - Se STA estiver ativo (high power): suspende AP por 30 s e depois religa.
-// - Se STA NÃO estiver ativo (low power): 0 s → caminho de deep-sleep já cobre desligar total.
-/*static inline uint32_t compute_ap_silence_secs(void) {
-    return has_activate_sta() ? 30U : 0U;
-}*/
 
 static esp_err_t exit_device_post_handler(httpd_req_t *req)
 {
-
+printf(">>>>>>EXIT<<<<<<<\n");
     if (has_activate_sta()) {
         httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
     } else {
@@ -2248,18 +2320,26 @@ static void update_sta_status_task(void *pvParameters) {
 
 static esp_err_t status_sta_get_handler(httpd_req_t *req) {
     printf("Requisição GET em /status_sta recebida\n");
+
+    // Consulta direta ao driver: conectado se esp_wifi_sta_get_ap_info == ESP_OK
+    wifi_ap_record_t ap;
+    bool connected = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
+
     char response[128];
-    if (sta_connected) {
-        snprintf(response, sizeof(response), "{\"sta_connected\": true, \"ssid\": \"%s\"}", get_ssid_sta());
+    if (connected) {
+        const char *ssid = get_ssid_sta();           // já existe no seu projeto
+        if (!ssid || !ssid[0]) ssid = (const char *)ap.ssid;  // fallback do driver
+        snprintf(response, sizeof(response),
+                 "{\"sta_connected\": true, \"ssid\": \"%s\"}", ssid);
     } else {
         snprintf(response, sizeof(response), "{\"sta_connected\": false}");
     }
+
     ESP_LOGI(TAG, "Resposta enviada: %s", response);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
-
 
 static esp_err_t connect_sta_post_handler(httpd_req_t *req) {
     char buf[512];
@@ -2567,41 +2647,14 @@ static esp_err_t ping_handler(httpd_req_t *req)
 }
 //----------------------------------------------------------
 
-static void shutdown_task(void* pvParameters) {
-
-    user_initiated_exit = true;
-  
-      // === NOVO: encerrar sessão Modbus e devolver logs para UART ===
-    modbus_master_deinit();      // solta RS-485 (UART volta a modo UART e desmuta o log)
-    console_tcp_disable();         // desliga console TCP, volta prints na UART
-    vTaskDelay(pdMS_TO_TICKS(50));   // pequeno respiro para LWIP/tee
-    uart_flush(UART_NUM_0);          // garante saída imediata na serial
+static void setup_modbus_guard_once(void) {
+    mb_session_config_t cfg;
+    mb_session_config_defaults(&cfg);
     
-            // Stop Factory server
-    stop_factory_server();
-    printf("Servidor HTTP parado.\n");
-            
-            // Stop WiFi
-    stop_wifi_ap_sta();
-    printf("WiFi parado.\n");
-            
-    wifi_ap_record_t ap_info;
-    esp_err_t sta_status = esp_wifi_sta_get_ap_info(&ap_info);
-    printf("STA STATUS=====>%i\n", sta_status);
-
-    if (sta_status == ESP_OK) {
-        printf("STA conectado ao SSID: %s. Mantendo WiFi ativo.\n", ap_info.ssid);
-
-    } else {
-        printf("STA nao conectado. Desativando WiFi\n");
- 
-        vTaskDelay(pdMS_TO_TICKS(100)); // Tempo para envio
-      }
-                      
-        vTaskDelay(pdMS_TO_TICKS(300));
-        server_shutdown_requested=true;
-        vTaskDelete(NULL);
+    cfg.init_once     = false;          // sobe/derruba master a cada sessão
+    cfg.silence_level = ESP_LOG_WARN;   // reduz ruído durante a janela Modbus
     
+    ESP_ERROR_CHECK(mb_session_setup(&cfg));
 }
 
 //-------------------------------------------------------------------
@@ -2609,7 +2662,6 @@ static void shutdown_task(void* pvParameters) {
 //-------------------------------------------------------------------
 void Factory_Config_Task(void* pvParameters)
 {
-	bool factory_task_ON = true;
  	Send_FactoryControl_Task_ON= true;
  	static bool exit_already_fired = false;   // <--- [NOVO GUARD]
     xQueueSend(xQueue_Factory_Control, &Send_FactoryControl_Task_ON,/*timeout=*/0);
@@ -2631,8 +2683,6 @@ if (fc_user_interacted_since_exit) {
     exit_already_fired = false;
     fc_user_interacted_since_exit = false;
 }
-
-     
          // 1) Se JÁ disparamos o single-shot, só rearmar quando:
     //    (a) o AP já tiver voltado, e (b) houve nova interação DEPOIS do EXIT.
     if (!s_single_shot_armed) {
@@ -2650,7 +2700,9 @@ if (fc_user_interacted_since_exit) {
 
     // 2) Aguardando INATIVIDADE: dispara UMA ÚNICA VEZ
     if (Send_FactoryControl_Task_ON && diff_us >= timeout_us) {
+		#if FC_TRACE_INTERACTION
 		factory_dump_last_interaction_origin();
+		#endif
         const uint32_t secs = compute_ap_silence_secs(); // ou AP_SILENCE_WINDOW_S
         ESP_LOGI(TAG, "Timeout de %d s → saída unificada (single-shot AP=%u s)",
                  FACTORY_CONFIG_TIMER, (unsigned)secs);
@@ -2660,24 +2712,26 @@ if (fc_user_interacted_since_exit) {
         s_single_shot_armed = false;   // trava até AP voltar + nova interação
     }
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+ /*   vTaskDelay(pdMS_TO_TICKS(100));
                                           
        if (server_shutdown_requested) {
 		   printf("xQueue_Factory_Control -->>>>send\n");
             Send_FactoryControl_Task_ON= false;
             // Stop HTTP server
             server_shutdown_requested=false;
-
 	           factory_task_ON=false;
-	           
-	        if(!has_factory_config()||!has_device_active()){
+	      if (!has_activate_sta()){
+			  
+	         if(!has_factory_config()||!has_device_active()){
 				
 				start_deep_sleep();
+			  }
 			}
       
             // Reset flag after attempting deep sleep (though this line won't be reached normally)
             
           }
+     printf(">>>>>>Send_FactoryControl_Task_ON = %d \n",Send_FactoryControl_Task_ON ) ;  
    BaseType_t result = xQueueSend(xQueue_Factory_Control, (void*)&Send_FactoryControl_Task_ON , (TickType_t)30 );
 
         if (!factory_task_ON&&result == pdPASS)
@@ -2691,7 +2745,7 @@ if (fc_user_interacted_since_exit) {
 	        {
 			 sta_status_task = true;	
 	         xTaskCreate(update_sta_status_task, "StaStatusTask", 4096, NULL, 5, NULL);
-	        }
+	        }*/
 	        	        
 vTaskDelay(pdMS_TO_TICKS(1000));  
 		   	          
@@ -2702,8 +2756,11 @@ void init_factory_task(void)
 {
 	user_initiated_exit = false;  // para não bloquear religamento do AP
 	start_wifi_ap_sta();
+	#if CONFIG_MODBUS_ENABLE
+	setup_modbus_guard_once();
+	#endif
     // Inicia o console TCP (AP: 192.168.4.1:3333; em STA use o IP do roteador)
-//    console_tcp_enable(3333); -> comentado temporariamente
+    console_tcp_enable(3333);  // -> comentado temporariamente
     ESP_LOGI("SELFTEST", "Hello TCP!");
 	if (Factory_Config_TaskHandle == NULL)
 	   {

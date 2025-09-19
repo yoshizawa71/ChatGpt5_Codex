@@ -1,5 +1,6 @@
 set(src_driver   
                "src/sleep_control.c"
+               "src/sleep_preparation.c"
                "src/ota_control.c"
                "src/config_control.c"
                "src/factory_control.c"
@@ -39,5 +40,8 @@ set(ulp_exp_dep_srcs "src/sleep_control.c")
 # 4. Call function to build ULP binary and embed in project using the argument
 #    values above.
 ulp_embed_binary(${ulp_app_name} "${ulp_s_sources}" "${ulp_exp_dep_srcs}")
+
+# força incluir dl_features.h no início de TODO .c desse componente
+target_compile_options(${COMPONENT_LIB} PUBLIC -include "ifdef_features.h")
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 

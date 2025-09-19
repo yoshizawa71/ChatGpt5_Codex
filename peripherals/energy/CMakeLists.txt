@@ -7,6 +7,7 @@ idf_component_register(SRCS "${srcs}"
                              oled_display
                              driver
                              RS485
+                             modbus
                              )
 
                             

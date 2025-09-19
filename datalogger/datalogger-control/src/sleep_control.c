@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 #include "rom/gpio.h"
 
+#include "sleep_preparation.h"
 #include "soc/gpio_num.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/sens_reg.h"
@@ -384,6 +385,7 @@ void start_deep_sleep(void)
 	printf("!!!>>> TIME : %s <<<!!!\n", get_time());
 	printf("Entering deep sleep\n\n");
 	
+	sleep_prepare(/*maybe_stop_wifi=*/true);
 	vTaskDelay(pdMS_TO_TICKS(100));
     esp_deep_sleep_start();
 }

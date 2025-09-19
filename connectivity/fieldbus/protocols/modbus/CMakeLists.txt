@@ -1,11 +1,14 @@
 
 idf_component_register( SRCS "src/modbus_rtu_master.c"
+                             "src/modbus_guard_session.c"
    #                          "src/modbus_slaves.c"
                         INCLUDE_DIRS "include"
                         REQUIRES espressif__esp-modbus
                                  driver 
                                  freertos
                                  log_mux
+                                 datalogger-control
+                                 
 )
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 

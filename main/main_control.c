@@ -61,7 +61,7 @@ static const char *TAG = "Main_Control";
 #endif
 
 extern uint32_t ulp_inactivity;
-extern bool factory_task_ON;
+
 extern bool wakeup_inactivity;
 extern bool ap_active;
 extern bool wifi_on;
@@ -421,7 +421,7 @@ if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load
 test_trigger_reboot(REBOOT_PANIC, 10000);*/
 
 //ESP_LOGI("ENERGY", "TESTE: vou chamar energy_meter_save_registered_currents()");
-//save_sensor_data_rs485(); // Temporario
+save_sensor_data_rs485(); 
 	
   if(has_measurement_to_send())
 	 {
@@ -455,7 +455,7 @@ test_trigger_reboot(REBOOT_PANIC, 10000);*/
 xQueueReceive(xQueue_NetConnect, &Receive_NetConnect_Task_ON , (TickType_t)5);
 xQueueReceive(xQueue_get_network_time, &Receive_Get_Network_Time_Task_ON , (TickType_t)5);
 #if ENABLE_DEEP_SLEEP
-xQueueReceive(xQueue_Factory_Control, &Receive_FactoryControl_Task_ON , (TickType_t)5);	
+xQueueReceive(xQueue_Factory_Control, &Receive_FactoryControl_Task_ON , (TickType_t)5);
 /*
 printf("Factory task on = %d ####  NetConnect = %d #### Receive_Get_Network_Time =%d \n ",
        Receive_FactoryControl_Task_ON, Receive_NetConnect_Task_ON,Receive_Get_Network_Time_Task_ON);
