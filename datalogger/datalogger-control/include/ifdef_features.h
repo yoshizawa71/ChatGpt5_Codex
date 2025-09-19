@@ -16,10 +16,10 @@
 
 // Modbus
 #ifndef CONFIG_MODBUS_ENABLE
-#define CONFIG_MODBUS_ENABLE 0
+#define CONFIG_MODBUS_ENABLE 1
 #endif
 #ifndef CONFIG_MODBUS_GUARD_ENABLE
-#define CONFIG_MODBUS_GUARD_ENABLE 0
+#define CONFIG_MODBUS_GUARD_ENABLE 1
 #endif
 
 // Trace de interação no factory

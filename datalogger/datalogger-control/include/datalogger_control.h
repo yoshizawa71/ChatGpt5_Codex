@@ -177,6 +177,8 @@ float get_flow_rate(void);
 void set_flow_rate(float vazao);
 bool has_factory_config(void);
 void set_factory_config(bool factory_config);
+bool has_always_on(void);
+void set_always_on(bool always_on);
 bool has_device_active(void);
 void set_device_active(bool turn_on_off);
 void config_system_time(void);

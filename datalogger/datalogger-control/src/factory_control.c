@@ -939,6 +939,7 @@ static esp_err_t config_device_post_handler(httpd_req_t *req) {
     set_date(cJSON_GetObjectItem(root, "date")->valuestring); // Forma original
     set_time(cJSON_GetObjectItem(root, "time")->valuestring); // Forma original
     set_factory_config(cJSON_IsTrue(cJSON_GetObjectItem(root, "finished_factory")));
+    set_always_on(cJSON_IsTrue(cJSON_GetObjectItem(root, "always_on")));
     set_device_active(cJSON_IsTrue(cJSON_GetObjectItem(root, "device_active")));
 //    send_value(cJSON_IsTrue(cJSON_GetObjectItem(root, "send_value")));
 cJSON *mode = cJSON_GetObjectItem(root, "send_mode");
@@ -2255,6 +2256,16 @@ else if (is_send_mode_time()) {                                           // equ
         cJSON_AddFalseToObject(root, "finished_factory");
     }
     
+        
+    if(has_always_on())
+    {
+        cJSON_AddTrueToObject(root, "always_on");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "always_on");
+    }
+    
     if(has_device_active())
     {
         cJSON_AddTrueToObject(root, "device_active");
@@ -2695,8 +2706,6 @@ if (fc_user_interacted_since_exit) {
         vTaskDelay(pdMS_TO_TICKS(100));
         continue; // enquanto desarmado, não reavalia timeout
        }
-       
-//printf(">>>Tempo corrido -->> %lld\n", diff_us);
 
     // 2) Aguardando INATIVIDADE: dispara UMA ÚNICA VEZ
     if (Send_FactoryControl_Task_ON && diff_us >= timeout_us) {
@@ -2712,40 +2721,6 @@ if (fc_user_interacted_since_exit) {
         s_single_shot_armed = false;   // trava até AP voltar + nova interação
     }
 
- /*   vTaskDelay(pdMS_TO_TICKS(100));
-                                          
-       if (server_shutdown_requested) {
-		   printf("xQueue_Factory_Control -->>>>send\n");
-            Send_FactoryControl_Task_ON= false;
-            // Stop HTTP server
-            server_shutdown_requested=false;
-	           factory_task_ON=false;
-	      if (!has_activate_sta()){
-			  
-	         if(!has_factory_config()||!has_device_active()){
-				
-				start_deep_sleep();
-			  }
-			}
-      
-            // Reset flag after attempting deep sleep (though this line won't be reached normally)
-            
-          }
-     printf(">>>>>>Send_FactoryControl_Task_ON = %d \n",Send_FactoryControl_Task_ON ) ;  
-   BaseType_t result = xQueueSend(xQueue_Factory_Control, (void*)&Send_FactoryControl_Task_ON , (TickType_t)30 );
-
-        if (!factory_task_ON&&result == pdPASS)
-           {
-			vTaskDelay(pdMS_TO_TICKS(500));  
-			printf(">>>Deinit Factory<<<\n");
-			deinit_factory_task();
-		   }
-
-	        if(has_activate_sta()&&!sta_status_task)
-	        {
-			 sta_status_task = true;	
-	         xTaskCreate(update_sta_status_task, "StaStatusTask", 4096, NULL, 5, NULL);
-	        }*/
 	        	        
 vTaskDelay(pdMS_TO_TICKS(1000));  
 		   	          

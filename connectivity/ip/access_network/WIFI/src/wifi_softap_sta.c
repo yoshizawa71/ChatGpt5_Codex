@@ -591,25 +591,65 @@ if (s_sta_kick_timer) xTimerStart(s_sta_kick_timer, 0);
 void stop_wifi_ap_sta(void)
 {
     ESP_LOGI(TAG_AP, "Parando Wi-Fi (modo NULL + deinit)");
+
+    // --- Fase 0: sinaliza desconexão intencional (evita reconectar em callbacks) ---
     s_sta_intentional_disconnect = true;
 
-    // Pare timers
-    if (s_sta_reconn_timer) { xTimerStop(s_sta_reconn_timer, 0); }
-    if (s_ap_resume_timer)   { esp_timer_stop(s_ap_resume_timer); }
+    // --- Fase 1: pare e destrua timers que podem repostar eventos/callbacks ---
+    if (s_sta_reconn_timer)  {
+        xTimerStop(s_sta_reconn_timer, 0);
+        xTimerDelete(s_sta_reconn_timer, 0);
+        s_sta_reconn_timer = NULL;
+    }
+    if (s_time_resync_timer) {
+        xTimerStop(s_time_resync_timer, 0);
+        xTimerDelete(s_time_resync_timer, 0);
+        s_time_resync_timer = NULL;
+    }
+    if (s_ap_resume_timer)   {
+        esp_timer_stop(s_ap_resume_timer);
+        esp_timer_delete(s_ap_resume_timer);
+        s_ap_resume_timer = NULL;
+    }
 
-    // Desconecta/para Wi-Fi
+    // --- Fase 2: calar loggers e handlers de evento antes do vendaval do stop() ---
+    // Logger diagnóstico (já existia no seu projeto)
+    wifi_diag_logger_deinit();
+
+    // Seu handler principal de Wi-Fi/IP (evita prints/lógica na task sys_evt durante o stop)
+    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT,    IP_EVENT_STA_GOT_IP,  &wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT,    IP_EVENT_STA_LOST_IP, &wifi_event_handler);
+
+    // --- Fase 3: pequena drenagem para esvaziar a fila do event loop ---
+    vTaskDelay(pdMS_TO_TICKS(2)); // 2–5 ms é suficiente
+
+    // --- Fase 4: parar Wi-Fi com ordem: disconnect -> stop -> NULL mode ---
+    // (erros são tolerados se já estiver parado)
     esp_wifi_disconnect();
     esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_NULL);
 
-    // Destrói netifs e desinicializa pilhas
-    if (s_netif_ap)  { esp_netif_destroy_default_wifi(s_netif_ap);  s_netif_ap = NULL; }
+    // --- Fase 5: destruir netifs específicos do Wi-Fi (deixe o esp-netif vivo) ---
+    if (s_netif_ap)  { esp_netif_destroy_default_wifi(s_netif_ap);  s_netif_ap  = NULL; }
     if (s_netif_sta) { esp_netif_destroy_default_wifi(s_netif_sta); s_netif_sta = NULL; }
 
+    // --- Fase 6: desinicializar o driver Wi-Fi ---
     esp_wifi_deinit();
-    if (s_wifi_event_group) { vEventGroupDelete(s_wifi_event_group); s_wifi_event_group = NULL; }
-    esp_event_loop_delete_default();
-    esp_netif_deinit();
+
+    // --- Fase 7: recursos gerais (mantenha o default event loop e o esp_netif vivos) ---
+    if (s_wifi_event_group) {
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+    }
+
+    // IMPORTANTE:
+    // 1) NÃO delete o event loop default aqui; outros subsistemas podem depender dele.
+    //    Se você apagar, terá que recriar antes de cada novo start.
+    // esp_event_loop_delete_default();   // <-- deixe comentado
+
+    // 2) NÃO deinitialize o esp-netif global; manter vivo evita reinit custoso/erros.
+    // esp_netif_deinit();                // <-- deixe comentado
 
     ESP_LOGI(TAG_AP, "*** WIFI Finished ***");
 }

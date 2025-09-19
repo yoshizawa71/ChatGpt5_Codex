@@ -128,26 +128,32 @@ quarto  <input id="send_time4" name="send_time4" type="number" min="0" max="23" 
     </tr>
     <tr>
       <th rowspan="1">Data</th>
-      <td colspan="3">
+      <td colspan="2">
         <input id="date" type="text" name="date" value="" size="20" maxlength="20">
       </td>
     </tr>
     <tr>
       <th rowspan="1">Hora</th>
-      <td colspan="3">
+      <td colspan="2">
         <input id="time" type="text" name="time" value="" size="20" maxlength="20">
       </td>
     </tr>
-    <tr>
-      <th rowspan="1">Configuração de Fábrica</th>
-      <td colspan="3">
-        <input type="checkbox" id="config_factory" name="config_factory">
-        <label for="config_factory">Finalizado</label>
+ 
+ <tr>   
+      <th rowspan="1">Configuração do Sistema </th>
+      <td>
+      <input type="checkbox" id="config_factory" name="config_factory">
+      <label for="config_factory">Finalizado</label>
+      </td>
+      
+      <td colspan="2">
+       <input type="checkbox" id="always_on" name="always_on">
+      <label for="always_on">Sempre Ligado</label>
       </td>
     </tr>
     
 <tr>
-  <th colspan="4" class="msg">
+  <th colspan="3" class="msg">
     <div style="display: flex; align-items: center;">
       <!-- Toggle à esquerda -->
       <div style="flex: 1; text-align: left;">

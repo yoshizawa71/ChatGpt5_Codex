@@ -37,6 +37,9 @@ static SemaphoreHandle_t file_mutex;
 
 #define RS485_MAP_PATH   "/littlefs/rs485_map.bin"
 
+#define CFG_MAX_JSON 4096
+static char g_cfg_io_buf[CFG_MAX_JSON + 1];
+
 bool has_device_config(void)
 {
     struct stat st;
@@ -297,6 +300,15 @@ void save_device_config(struct device_config *config)
         cJSON_AddFalseToObject(root, "finished_factory");
     }
     
+    if(config->always_on)
+    {
+        cJSON_AddTrueToObject(root, "always_on");
+    }
+    else
+    {
+        cJSON_AddFalseToObject(root, "always_on");
+    }
+    
      if(config->device_active)
     {
         cJSON_AddTrueToObject(root, "device_active");
@@ -349,86 +361,122 @@ void save_device_config(struct device_config *config)
 
 void get_device_config(struct device_config *config)
 {
-    xSemaphoreTake(file_mutex,portMAX_DELAY);
-    FILE *f = fopen(DEVICE_CONFIG_FILE, "r");
+    // Lê o arquivo TODO em buffer global (sem stack grande, sem malloc)
+    xSemaphoreTake(file_mutex, portMAX_DELAY);
 
-if (f == NULL)
-  {
-   printf ("### get_device_config --> File = Null ###\n");
-   xSemaphoreGive(file_mutex);
-   return;
-   }
-   
-	  vTaskDelay(pdMS_TO_TICKS(10));
-      fseek(f, 0L, SEEK_END);
-      long size = ftell(f);
-      rewind(f);
-      
-        if (size <= 0) {
-        // Arquivo vazio ou erro de tamanho
+    FILE *f = fopen(DEVICE_CONFIG_FILE, "r");
+    if (f == NULL) {
+        printf("### get_device_config --> File = Null ###\n");
+        xSemaphoreGive(file_mutex);
+        return;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));  // mantém seu pequeno debounce de I/O
+
+    // Descobre tamanho real do arquivo
+    fseek(f, 0L, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    if (size <= 0 || size > CFG_MAX_JSON) {
+        // [FIX] Recusa arquivo vazio/negativo e também maior que o limite
+        //       (evita truncamento e JSON parcial)
         fclose(f);
-        printf("### get_device_config --> SIZE = %ld ###\n", size);
+        printf("### get_device_config --> SIZE = %ld (max=%d) ###\n", size, CFG_MAX_JSON);
         vTaskDelay(pdMS_TO_TICKS(100));
         xSemaphoreGive(file_mutex);
         return;
-        }
-      
-    // Lê conteúdo em buffer
-    char buf[1024];
-    size_t bytes_read = fread(buf, 1, (size_t) (size < (long)sizeof(buf) - 1 ? size : (long)sizeof(buf) - 1), f);
-    buf[bytes_read] = '\0';
-    // Fecha o arquivo agora que a leitura foi concluída
+    }
+
+    // Lê exatamente 'size' bytes (ou o que houver) para o buffer global
+    size_t n = fread(g_cfg_io_buf, 1, (size_t)size, f);
+    g_cfg_io_buf[n] = '\0';
     fclose(f);
-    
- // Parse do JSON
-        cJSON *root = cJSON_Parse(buf);
-        if (root == NULL) {
+
+    // [FIX] Parse com comprimento conhecido (não depende do '\0' nem de buffer “grande o suficiente”)
+    cJSON *root = cJSON_ParseWithLength(g_cfg_io_buf, n);
+    if (root == NULL) {
         printf("### get_device_config --> JSON Parse Error ###\n");
         xSemaphoreGive(file_mutex);
         return;
-        }
-        cJSON *item;
+    }
 
-//************************************************
-//        Print Json File
-//************************************************
- //       char *my_json_string = cJSON_Print(root);
-//        ESP_LOGI(TAG, ">>>LOAD_DEVICE_CONFIG_FILE<<<\n%s",my_json_string);
-//        strlcpy(config->id, cJSON_GetObjectItem(root, "id")->valuestring,  sizeof(config->id));
+    // ---------- Copias seguras de strings ----------
+    // Observação: usamos snprintf(...) para garantir terminação e evitar overflow
+    // (se preferir e seu toolchain tiver, pode trocar por strlcpy(...))
 
-//************************************************
-        strcpy(config->id, cJSON_GetObjectItem(root, "id")->valuestring);
-        strcpy(config->name, cJSON_GetObjectItem(root, "name")->valuestring);
-        strcpy(config->phone, cJSON_GetObjectItem(root, "phone")->valuestring);
-        strcpy(config->ssid_ap, cJSON_GetObjectItem(root, "ssid_ap")->valuestring);
-        strcpy(config->wifi_password_ap, cJSON_GetObjectItem(root, "wifi_password_ap")->valuestring);
-        if(cJSON_IsTrue(cJSON_GetObjectItem(root, "activate_sta")))
-        {
-            config->activate_sta = true;
-        }
-        else
-        {
-            config->activate_sta = false;
-        }       
-        strcpy(config->ssid_sta, cJSON_GetObjectItem(root, "ssid_sta")->valuestring);
-        strcpy(config->wifi_password_sta, cJSON_GetObjectItem(root, "wifi_password_sta")->valuestring);
-        
-//-------------------------------------------------
-    cJSON *jm = cJSON_GetObjectItem(root, "send_mode");
-    if (jm && cJSON_IsString(jm)) {
-        strncpy(config->send_mode, jm->valuestring, sizeof(config->send_mode)-1);
-        config->send_mode[sizeof(config->send_mode)-1] = '\0';
+    cJSON *it;
+
+    it = cJSON_GetObjectItem(root, "id");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->id, sizeof(config->id), "%s", it->valuestring);
     } else {
-        strcpy(config->send_mode, "freq"); // padrão
+        config->id[0] = '\0';
     }
 
-    // 6) Lê send_period (sempre presente)
-    cJSON *p = cJSON_GetObjectItem(root, "send_period");
-    if (p && cJSON_IsNumber(p)) {
-        config->send_period = p->valueint;
+    it = cJSON_GetObjectItem(root, "name");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->name, sizeof(config->name), "%s", it->valuestring);
+    } else {
+        config->name[0] = '\0';
     }
 
-    // 7) Lê send_times, só sobrescreve se for número (inclusive 0)
+    it = cJSON_GetObjectItem(root, "phone");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->phone, sizeof(config->phone), "%s", it->valuestring);
+    } else {
+        config->phone[0] = '\0';
+    }
+
+    it = cJSON_GetObjectItem(root, "ssid_ap");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->ssid_ap, sizeof(config->ssid_ap), "%s", it->valuestring);
+    } else {
+        config->ssid_ap[0] = '\0';
+    }
+
+    it = cJSON_GetObjectItem(root, "wifi_password_ap");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->wifi_password_ap, sizeof(config->wifi_password_ap), "%s", it->valuestring);
+    } else {
+        config->wifi_password_ap[0] = '\0';
+    }
+
+    // Booleans
+    it = cJSON_GetObjectItem(root, "activate_sta");
+    config->activate_sta = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+
+    it = cJSON_GetObjectItem(root, "ssid_sta");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->ssid_sta, sizeof(config->ssid_sta), "%s", it->valuestring);
+    } else {
+        config->ssid_sta[0] = '\0';
+    }
+
+    it = cJSON_GetObjectItem(root, "wifi_password_sta");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->wifi_password_sta, sizeof(config->wifi_password_sta), "%s", it->valuestring);
+    } else {
+        config->wifi_password_sta[0] = '\0';
+    }
+
+    // ---------- Campos adicionais ----------
+    // send_mode
+    it = cJSON_GetObjectItem(root, "send_mode");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->send_mode, sizeof(config->send_mode), "%s", it->valuestring);
+    } else {
+        // padrão
+        snprintf(config->send_mode, sizeof(config->send_mode), "%s", "freq");
+    }
+
+    // send_period
+    it = cJSON_GetObjectItem(root, "send_period");
+    if (cJSON_IsNumber(it)) {
+        config->send_period = it->valueint;
+    } // se faltar, mantém valor anterior da struct
+
+    // send_times[0..3]
     cJSON *arr = cJSON_GetObjectItem(root, "send_times");
     if (arr && cJSON_IsArray(arr)) {
         int len = cJSON_GetArraySize(arr);
@@ -437,65 +485,67 @@ if (f == NULL)
             if (t && cJSON_IsNumber(t)) {
                 config->send_times[i] = (uint8_t)t->valueint;
             }
-            // se vier JSON null ou não-numérico, pula e mantém valor antigo
         }
     }
-   
-//--------------------------------------------------------------  
-       config->deep_sleep_period = cJSON_GetObjectItem(root, "deep_sleep_period")->valueint;
 
-        if(cJSON_IsTrue(cJSON_GetObjectItem(root, "save_pulse_zero")))
-        {
-            config->save_pulse_zero = true;
-        }
-        else
-        {
-            config->save_pulse_zero = false;
-        }
-        config->scale = cJSON_GetObjectItem(root, "scale")->valueint;
-        // Campo: flow_rate
-        item = cJSON_GetObjectItem(root, "flow_rate");
-        if (item && cJSON_IsNumber(item)) {
-        config->flow_rate = (float)item->valuedouble;
-        } else {
+    // deep_sleep_period
+    it = cJSON_GetObjectItem(root, "deep_sleep_period");
+    if (cJSON_IsNumber(it)) {
+        config->deep_sleep_period = it->valueint;
+    }
+
+    // save_pulse_zero
+    it = cJSON_GetObjectItem(root, "save_pulse_zero");
+    config->save_pulse_zero = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+
+    // scale
+    it = cJSON_GetObjectItem(root, "scale");
+    if (cJSON_IsNumber(it)) {
+        config->scale = it->valueint;
+    }
+
+    // flow_rate
+    it = cJSON_GetObjectItem(root, "flow_rate");
+    if (cJSON_IsNumber(it)) {
+        config->flow_rate = (float)it->valuedouble;
+    } else {
         ESP_LOGW("DeviceConfig", "Campo 'flow_rate' não encontrado ou inválido");
         config->flow_rate = 0.0f;
-        }
-        
-        strcpy(config->date, cJSON_GetObjectItem(root, "date")->valuestring);
-        strcpy(config->time, cJSON_GetObjectItem(root, "time")->valuestring);
-        if(cJSON_IsTrue(cJSON_GetObjectItem(root, "finished_factory")))
-        {
-            config->finished_factory = true;
-        }
-        else
-        {
-            config->finished_factory = false;
-        }
-        
-        if(cJSON_IsTrue(cJSON_GetObjectItem(root, "device_active")))
-        {
-            config->device_active = true;
-        }
-        else
-        {
-            config->device_active = false;
-        }
-        
-        
-        cJSON_Delete(root);
-     
-/*    else
-         {
-          fclose(f);
-          printf ("### get_device_config --> SIZE = %d ###\n",size);
-          vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
-          }
-          */  
+    // date
+    it = cJSON_GetObjectItem(root, "date");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->date, sizeof(config->date), "%s", it->valuestring);
+    } else {
+        config->date[0] = '\0';
+    }
 
+    // time
+    it = cJSON_GetObjectItem(root, "time");
+    if (cJSON_IsString(it) && it->valuestring) {
+        snprintf(config->time, sizeof(config->time), "%s", it->valuestring);
+    } else {
+        config->time[0] = '\0';
+    }
+
+    // finished_factory
+    it = cJSON_GetObjectItem(root, "finished_factory");
+    config->finished_factory = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+
+    // always_on
+    it = cJSON_GetObjectItem(root, "always_on");
+    config->always_on = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+
+    // device_active
+    it = cJSON_GetObjectItem(root, "device_active");
+    config->device_active = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+
+    // Libera JSON e mutex
+    cJSON_Delete(root);
     xSemaphoreGive(file_mutex);
 }
+
 
 void save_network_config(struct network_config *config)
 {

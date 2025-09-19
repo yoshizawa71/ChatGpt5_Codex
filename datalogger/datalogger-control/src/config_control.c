@@ -237,6 +237,7 @@ static void save_default_device_config(void)
     dev_config.scale = 1;
     dev_config.save_pulse_zero = true;
     dev_config.finished_factory = false;
+    dev_config.always_on = false;
     dev_config.device_active = false;
     strcpy(dev_config.date, "");
     strcpy(dev_config.time, "00:00:00");
@@ -771,6 +772,16 @@ bool has_factory_config(void)
 void set_factory_config(bool factory_config)
 {
     dev_config.finished_factory = factory_config;
+}
+
+bool has_always_on(void)
+{
+    return dev_config.always_on;
+}
+
+void set_always_on(bool always_on)
+{
+    dev_config.always_on = always_on;
 }
 
 bool has_device_active(void)

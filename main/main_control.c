@@ -345,8 +345,8 @@ uint8_t counter=0;
 
  if ((ulp_inactivity & UINT16_MAX) == 1)
 	 {
-		 activate_mosfet(enable_sara);
-		 cell_get_local_time();
+		// activate_mosfet(enable_sara);
+		// cell_get_local_time();
 	 }
 	 
 //Somente para teste

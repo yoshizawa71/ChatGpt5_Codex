@@ -113,6 +113,7 @@ struct device_config {
 //    bool        send_value;
     bool        save_pulse_zero;
     bool        finished_factory;
+    bool        always_on;
     bool        device_active;
 };
 

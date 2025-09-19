@@ -97,6 +97,7 @@
       $('#date').val(obj.date);
       $('#time').val(obj.time);
       $('#config_factory').prop('checked', obj.finished_factory);
+      $('#always_on').prop('checked', obj.always_on);
 
       // **Novo: popula toggle e status**
       $('#device_toggle').prop('checked', obj.device_active);
@@ -173,6 +174,7 @@
       date:              $('#date').val(),
       time:              $('#time').val(),
       finished_factory:  $('#config_factory').prop('checked'),
+      always_on:         $('#always_on').prop('checked'),
 
       // **Novo: estado do toggle**
       device_active:     $('#device_toggle').prop('checked')
