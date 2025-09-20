@@ -279,15 +279,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG_AP, "SoftAP parado (AP_STOP)");
             ap_active = false;
 
-             // [NEW] Se o AP deveria estar ON e nÃ£o estamos no â€œsilÃªncioâ€ programado, religue.
-            // (antes vocÃª sÃ³ religava quando STA nÃ£o estava ativo; aqui religamos mesmo em STA)
-/*            if (s_ap_should_be_on && !ap_suspend_window_open()) {
-                ESP_LOGI(TAG_AP, "AP deveria estar ON â†’ auto-restart do SoftAP");
-                wifi_ap_force_enable();
-             } else {
-               ESP_LOGI(TAG_AP, "AP_STOP permitido (suspenso=%d, single_shot=%d, should_on=%d)",
-                 (int)s_ap_suspended_flag,(int)s_ap_should_be_on);
-               }*/
               break;
         }
 
@@ -445,12 +436,6 @@ static void wifi_sta_force_connect_if_enabled(const char *ssid, const char *pwd)
     ESP_LOGI(TAG_STA, "esp_wifi_connect(): %s", esp_err_to_name(e2));
 }
 
-// [NEW] callback do one-shot pós-boot
-/*static void sta_kick_timer_cb(TimerHandle_t xTimer)
-{
-    // usa o cache carregado no boot
-    wifi_sta_force_connect_if_enabled(s_boot_ssid, s_boot_pwd);
-}*/
 static void sta_kick_timer_cb(TimerHandle_t xTimer) {
     if (s_sta_worker_task) xTaskNotifyGive(s_sta_worker_task);
 }
@@ -461,8 +446,15 @@ esp_err_t start_wifi_ap_sta(void)
     const char *ssid_ap = get_ssid_ap();
     const char *psw_ap  = get_password_ap();
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    return err;                 // ou ESP_ERROR_CHECK(err);
+    }
+    
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    return err;                 // ou ESP_ERROR_CHECK(err);
+    }
 
     s_netif_ap  = esp_netif_create_default_wifi_ap();
     s_netif_sta = esp_netif_create_default_wifi_sta();
@@ -523,10 +515,6 @@ esp_err_t start_wifi_ap_sta(void)
     if (psw_ap)  strncpy((char*)apcfg.ap.password, psw_ap, sizeof(apcfg.ap.password)-1);
     if (!psw_ap || strlen(psw_ap) == 0) apcfg.ap.authmode = WIFI_AUTH_OPEN;
 
-/*    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &apcfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
-*/
     // [NEW] Setar modo AP+STA e configs ANTES do start
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &apcfg));
@@ -734,91 +722,3 @@ static void time_resync_timer_cb(TimerHandle_t xTimer){
         xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 4, NULL);
     }
 }
-
-/*bool wifi_ap_single_shot_done(void)
-{
-    return s_single_shot_done;
-}
-
-static void ap_resume_timer_cb(void *arg)
-{
-    // NOVO: fechar janela
-    s_ap_suspended_flag   = false;
-    s_ap_suspend_until_us = 0;
-    s_ap_should_be_on     = true;
-
-    // Voltar para APSTA e restaurar config
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG_APSS, "set_mode(APSTA) falhou: %s", esp_err_to_name(err));
-        return;
-    }
-
-    if (!s_ap_cfg_valid) {
-        (void)esp_wifi_get_config(WIFI_IF_AP, &s_ap_cfg_cached);
-        s_ap_cfg_valid = true;
-    }
-    if (s_ap_cfg_valid) {
-        (void)esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg_cached);
-    }
-
-    // Garante AP ON (idempotente)
-    wifi_ap_force_enable();
-
-    ESP_LOGI(TAG_APSS, "AP religado após suspensão única.");
-}
-
-
-void wifi_ap_single_shot_suspend(uint32_t seconds)
-{
-    if (seconds == 0) {
-        ESP_LOGI(TAG_APSS, "seconds=0 → nada a fazer.");
-        return;
-    }
-    if (s_single_shot_done) {
-        ESP_LOGI(TAG_APSS, "Suspensão única já executada; ignorando novo pedido.");
-        return;
-    }
-
-    // Cache do AP (se possível)
-    if (esp_wifi_get_config(WIFI_IF_AP, &s_ap_cfg_cached) == ESP_OK) {
-        s_ap_cfg_valid = true;
-    } else {
-        s_ap_cfg_valid = false;
-    }
-
-    // NOVO: abrir "janela de silêncio" para o auto-restart respeitar
-    s_ap_should_be_on       = true;   // queremos voltar com o AP ao fim
-    s_ap_suspended_flag     = true;
-    s_ap_suspend_until_us   = esp_timer_get_time() + (uint64_t)seconds * 1000000ULL;
-
-    ESP_LOGW(TAG_APSS, "Suspendendo AP por %u s (single-shot)", (unsigned)seconds);
-
-    // Desliga AP mantendo STA
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG_APSS, "set_mode(STA) falhou: %s", esp_err_to_name(err));
-        s_single_shot_done = true;     // evita loop
-        return;
-    }
-
-    if (!s_resume_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = ap_resume_timer_cb,
-            .name     = "ap_resume_once"
-        };
-        if (esp_timer_create(&args, &s_resume_timer) != ESP_OK) {
-            ESP_LOGE(TAG_APSS, "esp_timer_create falhou");
-            s_single_shot_done = true;
-            return;
-        }
-    }
-    if (esp_timer_start_once(s_resume_timer, (uint64_t)seconds * 1000000ULL) != ESP_OK) {
-        ESP_LOGE(TAG_APSS, "esp_timer_start_once falhou");
-        s_single_shot_done = true;
-        return;
-    }
-
-    s_single_shot_done = true;  // garante “uma vez por boot”
-}
-*/

@@ -226,7 +226,8 @@ static const char *basefile(const char *path)
 
 // Se STA ativo (high power), suspende AP por 30 s; senão, 0 (deep sleep cobre low power)
 static inline uint32_t compute_ap_silence_secs(void) {
-    return has_activate_sta() ? 20U : 0U;
+ //   return has_activate_sta() ? 20U : 0U;
+ return has_always_on() ? 15U : 0U;
 }
 
 static inline bool now_before(uint32_t now, uint32_t deadline)
@@ -742,6 +743,10 @@ static esp_err_t stop_server(httpd_handle_t server)
 }
 //---------------------------------------
 void wifi_portal_on_ap_start(void) {
+	
+	if (!has_always_on()) {
+    return; // headless: não ligar HTTP/portal aqui
+       }
     if (server == NULL) {
         ESP_LOGI(TAG, "AP_START: HTTP server não estava rodando — iniciando.");
         start_server();
@@ -2065,7 +2070,8 @@ static void factory_exit_common(uint32_t ap_silence_secs)
     vTaskDelay(pdMS_TO_TICKS(150));
     save_system_config_data_time();
     
-    if (has_activate_sta()) {
+//    if (has_activate_sta()) {
+	  if (has_always_on()) {
 		wifi_ap_suspend_temporarily(ap_silence_secs);
         ESP_LOGI(TAG, "SaÃ­da: STA ativo â†’ suspendendo AP por %u s", (unsigned)ap_silence_secs);
         // >>> NÃ£o toque em ap_active nem chame esp_wifi_set_mode() aqui <<<
@@ -2087,7 +2093,7 @@ static void factory_exit_common(uint32_t ap_silence_secs)
 static esp_err_t exit_device_post_handler(httpd_req_t *req)
 {
 printf(">>>>>>EXIT<<<<<<<\n");
-    if (has_activate_sta()) {
+    if (has_activate_sta()&&has_always_on()) {
         httpd_resp_send(req, "AP desconectado, STA mantido", HTTPD_RESP_USE_STRLEN);
     } else {
         httpd_resp_send(req, "Dispositivo entrando em deep sleep", HTTPD_RESP_USE_STRLEN);
@@ -2694,6 +2700,18 @@ if (fc_user_interacted_since_exit) {
     exit_already_fired = false;
     fc_user_interacted_since_exit = false;
 }
+
+ /* ====== GUARD 0: enquanto houver cliente no console TCP,
+       não avaliamos rearm/timeout e mantemos AP/HTTP ativos ====== */
+    if (tcp_log_has_client()) {
+        if (s_single_shot_armed) {
+            ESP_LOGI(TAG, "Console TCP ativo → desarmando single-shot e mantendo AP/HTTP.");
+            s_single_shot_armed = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));   // respira um pouco e volta
+        continue;
+    }
+
          // 1) Se JÁ disparamos o single-shot, só rearmar quando:
     //    (a) o AP já tiver voltado, e (b) houve nova interação DEPOIS do EXIT.
     if (!s_single_shot_armed) {
@@ -2709,6 +2727,14 @@ if (fc_user_interacted_since_exit) {
 
     // 2) Aguardando INATIVIDADE: dispara UMA ÚNICA VEZ
     if (Send_FactoryControl_Task_ON && diff_us >= timeout_us) {
+		
+	 /* ====== GUARD 1: chegou no timeout, mas há cliente TCP?
+           então não sai; aguarda fechar o console ====== */
+        if (tcp_log_has_client()) {
+            ESP_LOGI(TAG, "Timeout atingido, MAS console TCP em uso — mantendo AP/HTTP ativos.");
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;  // não chama factory_exit_common()
+        }
 		#if FC_TRACE_INTERACTION
 		factory_dump_last_interaction_origin();
 		#endif
@@ -2735,7 +2761,7 @@ void init_factory_task(void)
 	setup_modbus_guard_once();
 	#endif
     // Inicia o console TCP (AP: 192.168.4.1:3333; em STA use o IP do roteador)
-    console_tcp_enable(3333);  // -> comentado temporariamente
+    console_tcp_enable(3333);  // 
     ESP_LOGI("SELFTEST", "Hello TCP!");
 	if (Factory_Config_TaskHandle == NULL)
 	   {

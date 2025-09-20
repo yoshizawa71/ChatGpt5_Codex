@@ -1,5 +1,5 @@
 // tcp_log_server.c  (ESP-IDF 5.x)
-// Console TCP para logs, com ring buffer, bind no IP do AP e envio non-blocking.
+// Console TCP para logs, com ring buffer, bind em 0.0.0.0 e envio non-blocking.
 
 #include "tcp_log_server.h"
 
@@ -9,38 +9,48 @@
 #include <errno.h>
 
 #include "esp_log.h"
-#include "esp_netif.h"       // <-- novo (pegar IP do AP)
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "lwip/inet.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include <fcntl.h>
+#include <netinet/in.h>
 
 static const char *TAG = "TCP_LOG";
 
 /* ===================== RING BUFFER ===================== */
 #define LOG_RBUF_SZ   (8 * 1024)
+
 static char   s_rbuf[LOG_RBUF_SZ];
 static size_t s_rhead = 0;
 static bool   s_rfull = false;
-//static SemaphoreHandle_t s_rmtx = NULL;
 static portMUX_TYPE s_rspin = portMUX_INITIALIZER_UNLOCKED;
 
-/*static void rbuf_init(void) {
-    if (!s_rmtx) {
-        s_rmtx = xSemaphoreCreateMutex();
+static int tcp_send_norm(int fd, const char *buf, size_t n)
+{
+    // Converte LF -> CRLF por blocos, sem alocar heap
+    char tmp[512];
+    size_t i = 0;
+    while (i < n) {
+        size_t o = 0;
+        while (i < n && o < sizeof(tmp)-2) {
+            char c = buf[i++];
+            if (c == '\n') { tmp[o++] = '\r'; tmp[o++] = '\n'; }
+            else           { tmp[o++] = c; }
+        }
+        int sent = lwip_send(fd, tmp, (int)o, MSG_DONTWAIT);
+        if (sent < 0 && errno != EWOULDBLOCK && errno != EAGAIN) return -1;
     }
-}*/
+    return 0;
+}
 
 static void rbuf_write(const char *data, size_t len) {
-/*    if (!s_rmtx) {
-        rbuf_init();
-    }*/
-//    xSemaphoreTake(s_rmtx, portMAX_DELAY);
-portENTER_CRITICAL(&s_rspin);
-
+    if (!data || len == 0) return;
+    portENTER_CRITICAL(&s_rspin);
     size_t off = 0;
     while (off < len) {
         size_t chunk = LOG_RBUF_SZ - s_rhead;
@@ -50,277 +60,241 @@ portENTER_CRITICAL(&s_rspin);
         if (s_rhead == 0) s_rfull = true;
         off += chunk;
     }
-portEXIT_CRITICAL(&s_rspin);
-//    xSemaphoreGive(s_rmtx);
+    portEXIT_CRITICAL(&s_rspin);
 }
 
 static size_t rbuf_snapshot(char *out, size_t out_sz) {
-/*    if (!s_rmtx) {
-        rbuf_init();
-    }*/
- //   xSemaphoreTake(s_rmtx, portMAX_DELAY);
-portENTER_CRITICAL(&s_rspin);
+    if (!out || out_sz == 0) return 0;
+    portENTER_CRITICAL(&s_rspin);
     size_t total = s_rfull ? LOG_RBUF_SZ : s_rhead;
     if (total > out_sz) total = out_sz;
     size_t start = s_rfull ? s_rhead : 0;
     for (size_t i = 0; i < total; ++i) {
         out[i] = s_rbuf[(start + i) % LOG_RBUF_SZ];
     }
-
+    // “esvazia” a janela copiada (modelo snapshot + drain)
     s_rhead = 0;
     s_rfull = false;
-//    xSemaphoreGive(s_rmtx);
-portEXIT_CRITICAL(&s_rspin);
-
+    portEXIT_CRITICAL(&s_rspin);
     return total;
 }
 /* ======================================================= */
 
 /* ====================== TCP server ===================== */
-static TaskHandle_t s_srv_task    = NULL;
-static int          s_server_sock = -1;
-static int          s_client_sock = -1;
-static uint16_t     s_port        = 3333;
+static TaskHandle_t s_srv_task   = NULL;
+static int          s_listen_fd  = -1;   // socket em listen()
+static int          s_client_fd  = -1;   // socket do cliente aceito
+static uint16_t     s_port       = 3333;
 
-// NEW: fecha cliente se a pilha ficar bloqueada por muito tempo (EAGAIN/EWOULDBLOCK)
+// fecha cliente se houver muitos EAGAIN/EWOULDBLOCK consecutivos
 static uint16_t     s_again_strikes = 0;
-#define AGAIN_STRIKES_LIMIT 200   // ~200 chamadas de log (~2 s, depende do volume de logs)
+#define AGAIN_STRIKES_LIMIT 200     // ~200 ciclos de envio (depende do volume)
 
 static void close_client(void) {
-    if (s_client_sock >= 0) {
-        shutdown(s_client_sock, SHUT_RDWR);
-        close(s_client_sock);
-        s_client_sock = -1;
+    if (s_client_fd >= 0) {
+        lwip_shutdown(s_client_fd, SHUT_RDWR);
+        lwip_close(s_client_fd);
+        s_client_fd = -1;
     }
-    s_again_strikes = 0;      // NEW
+    s_again_strikes = 0;
 }
 
-bool tcp_log_client_connected(void) {
-    return s_client_sock >= 0;
-}
-
-// Fecha o cliente TCP atual (se existir). Útil ao derrubar o AP.
 void tcp_log_force_close_client(void) {
-       // fecha a sessão TCP atual (se houver) sem travar
-    if (s_client_sock >= 0) {
-        int fd = s_client_sock;
-        s_client_sock = -1;  // invalida já, para que o logger não tente usar
+    if (s_client_fd >= 0) {
+        int fd = s_client_fd;
+        s_client_fd = -1; // invalida primeiro
         lwip_shutdown(fd, SHUT_RDWR);
         lwip_close(fd);
     }
     s_again_strikes = 0;
 }
 
-/* vprintf hook: guarda no buffer e tenta enviar ao cliente sem bloquear */
-/*int tcp_log_vprintf(const char *fmt, va_list args) {
-    char buf[512];
-    int n = vsnprintf(buf, sizeof(buf) - 3, fmt, args);
-    if (n <= 0) return 0;
-    if (n > (int)sizeof(buf) - 3) n = sizeof(buf) - 3;
+bool tcp_log_is_listening(void) { return s_listen_fd >= 0; }
+bool tcp_log_has_client(void)   { return s_client_fd >= 0; }
 
-    // normaliza CRLF
-    if (buf[n - 1] == '\n') {
-        buf[n - 1] = '\r';
-        buf[n]     = '\n';
-        buf[n + 1] = '\0';
-        n += 1;
-    } else {
-        buf[n]   = '\r';
-        buf[n+1] = '\n';
-        buf[n+2] = '\0';
-        n += 2;
+bool tcp_log_port_in_use(int port)
+{
+    int fd = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (fd < 0) return false;
+
+    int yes = 1;
+    lwip_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = lwip_htonl(INADDR_ANY);
+    addr.sin_port        = lwip_htons((uint16_t)port);
+
+    bool in_use = false;
+    if (lwip_bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        if (errno == EADDRINUSE) in_use = true;
     }
+    lwip_close(fd);
+    return in_use;
+}
 
-    rbuf_write(buf, n);
+/* =============== Writer vprintf para log mux =============== */
+int tcp_log_vprintf(const char *fmt, va_list ap)
+{
+    // formata uma única vez em buffer local
+    char local[512];
+    va_list ap2; va_copy(ap2, ap);
+    int n = vsnprintf(local, sizeof(local), fmt, ap2);
+    va_end(ap2);
+    if (n <= 0) return n;
+    if (n >= (int)sizeof(local)) n = (int)sizeof(local) - 1;
+    local[n] = '\0';
 
-    if (s_client_sock >= 0) {
-    int sent = send(s_client_sock, buf, n, MSG_DONTWAIT);
-    if (sent < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            // pilha ocupada: acumula strikes e fecha para reconectar limpo
-            if (++s_again_strikes > AGAIN_STRIKES_LIMIT) {
-                ESP_LOGW(TAG, "Client stalled (%u strikes) → closing", s_again_strikes);
+    // grava no ring buffer para permitir dump no connect
+    rbuf_write(local, (size_t)n);
+
+    // tenta também enviar ao cliente (não bloqueante)
+    if (s_client_fd >= 0) {
+ //       int sent = lwip_send(s_client_fd, local, n, MSG_DONTWAIT);
+          int sent = (s_client_fd >= 0) ? tcp_send_norm(s_client_fd, local, (size_t)n) : 0;
+        if (sent < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                if (++s_again_strikes > AGAIN_STRIKES_LIMIT) {
+                    ESP_LOGW(TAG, "Cliente lento — fechando conexão.");
+                    close_client();
+                }
+            } else {
                 close_client();
             }
-            return n; // não bloqueia nem perde o fluxo do logger
         } else {
-            close_client();   // erro real
-            return n;
+            s_again_strikes = 0;
         }
     }
-    s_again_strikes = 0;      // sucesso → zera strikes
-    return sent;
-}
     return n;
-}*/
+}
 
-int tcp_log_vprintf(const char *fmt, va_list args)
+/* ====================== Task do servidor ====================== */
+static void tcp_log_server_task(void *arg)
 {
-    char buf[512];
-    int n = vsnprintf(buf, sizeof(buf) - 2, fmt, args);
-    if (n <= 0) return 0;
-    if (n > (int)sizeof(buf) - 2) n = sizeof(buf) - 2;
-
-    // opcional: normaliza fim de linha
-    if (n && buf[n-1] == '\n') { buf[n-1] = '\r'; buf[n++] = '\n'; }
-
-    rbuf_write(buf, n);   // <-- só escreve no ring
-    return n;
-}
-
-
-static void tcp_log_server_task(void *arg) {
     (void)arg;
 
     for (;;) {
-        s_server_sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (s_server_sock < 0) {
+        // 1) cria socket e entra em listen
+        s_listen_fd = lwip_socket(AF_INET, SOCK_STREAM, 0);
+        if (s_listen_fd < 0) {
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
         int opt = 1;
-        setsockopt(s_server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-        // === bind preso ao IP do AP (192.168.4.1 tipicamente) ===
-        esp_netif_ip_info_t ip = {0};
-        esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-        if (ap_netif) (void)esp_netif_get_ip_info(ap_netif, &ip);
+        lwip_setsockopt(s_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         struct sockaddr_in addr = {0};
         addr.sin_family      = AF_INET;
-        addr.sin_port        = htons(s_port);
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port        = lwip_htons(s_port);
+        addr.sin_addr.s_addr = lwip_htonl(INADDR_ANY);
 
-        if (bind(s_server_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            close(s_server_sock);
-            s_server_sock = -1;
+        if (lwip_bind(s_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            lwip_close(s_listen_fd); s_listen_fd = -1;
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
-        if (listen(s_server_sock, 1) < 0) {
-            close(s_server_sock);
-            s_server_sock = -1;
+        if (lwip_listen(s_listen_fd, 1) < 0) {
+            lwip_close(s_listen_fd); s_listen_fd = -1;
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
         ESP_LOGI(TAG, "Waiting TCP on port %u...", s_port);
 
-        struct sockaddr_in raddr;
-        socklen_t rlen = sizeof(raddr);
-        s_client_sock = accept(s_server_sock, (struct sockaddr *)&raddr, &rlen);
-        if (s_client_sock < 0) {
-            close(s_server_sock);
-            s_server_sock = -1;
+        // 2) aceita um cliente (modelo single-client)
+        struct sockaddr_in raddr; socklen_t rlen = sizeof(raddr);
+        s_client_fd = lwip_accept(s_listen_fd, (struct sockaddr *)&raddr, &rlen);
+        if (s_client_fd < 0) {
+            lwip_close(s_listen_fd); s_listen_fd = -1;
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
-        s_again_strikes = 0; 
+        s_again_strikes = 0;
         ESP_LOGI(TAG, "Client connected");
-        close(s_server_sock);
-        s_server_sock = -1;
 
-        // non-blocking no socket do cliente
-        int flags = lwip_fcntl(s_client_sock, F_GETFL, 0);
-        lwip_fcntl(s_client_sock, F_SETFL, flags | O_NONBLOCK);
+        // single-client: fecha o listen enquanto existir cliente
+        lwip_close(s_listen_fd); s_listen_fd = -1;
 
-        // Keepalive (se suportado pela build)
-#ifdef SO_KEEPALIVE
-        int ka = 1; setsockopt(s_client_sock, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
-#endif
-#ifdef TCP_KEEPIDLE
-        int idle = 30; setsockopt(s_client_sock, IPPROTO_TCP, TCP_KEEPIDLE,  &idle, sizeof(idle));
-#endif
-#ifdef TCP_KEEPINTVL
-        int intvl = 5; setsockopt(s_client_sock, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-#endif
-#ifdef TCP_KEEPCNT
-        int cnt = 3; setsockopt(s_client_sock, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,  sizeof(cnt));
-#endif
+        // non-blocking
+        int flags = lwip_fcntl(s_client_fd, F_GETFL, 0);
+        lwip_fcntl(s_client_fd, F_SETFL, flags | O_NONBLOCK);
 
-        // Banner + dump inicial
-        static const char *banner =
-            "\r\n=== TCP LOG CONSOLE READY ===\r\n"
-            "(AP bound console, non-blocking)\r\n\r\n";
-        send(s_client_sock, banner, strlen(banner), MSG_DONTWAIT);
+        // keepalive (se disponível)
+    #ifdef SO_KEEPALIVE
+        int ka = 1; lwip_setsockopt(s_client_fd, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+    #endif
+    #ifdef TCP_KEEPIDLE
+        int idle = 30; lwip_setsockopt(s_client_fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle, sizeof(idle));
+    #endif
+    #ifdef TCP_KEEPINTVL
+        int intvl = 5; lwip_setsockopt(s_client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    #endif
+    #ifdef TCP_KEEPCNT
+        int cnt = 3; lwip_setsockopt(s_client_fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,  sizeof(cnt));
+    #endif
 
-        static char dump_buf[LOG_RBUF_SZ];
-        size_t dn = rbuf_snapshot(dump_buf, sizeof(dump_buf));
-        if (dn > 0) (void)send(s_client_sock, dump_buf, dn, MSG_DONTWAIT);
+// banner + dump inicial
+static const char *banner =
+    "\r\n=== TCP LOG CONSOLE READY ===\r\n"
+    "(non-blocking)\r\n\r\n";
+(void)tcp_send_norm(s_client_fd, banner, strlen(banner));
 
-        // Loop: consome input (Enter etc.) e detecta desconexão
-        while (s_client_sock >= 0) {
-            char sink[64];
-            static char out[1024];
-            size_t n = rbuf_snapshot(out, sizeof(out));
-            if (n > 0) {
-                int sent = send(s_client_sock, out, n, MSG_DONTWAIT);
-              if (sent < 0 && errno != EWOULDBLOCK && errno != EAGAIN) {
-                close_client();
-                 break;
-                }
-            } 
-            
-            int r = recv(s_client_sock, sink, sizeof(sink), MSG_DONTWAIT);
-            if (r == 0) {            // peer fechou
-                close_client();
-                break;
-            } else if (r < 0) {
-                if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                    close_client();
-                    break;
-                }
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
+static char dump_buf[LOG_RBUF_SZ];
+size_t dn = rbuf_snapshot(dump_buf, sizeof(dump_buf));
+if (dn > 0) (void)tcp_send_norm(s_client_fd, dump_buf, dn);
+
+// 3) loop do cliente (drain + detectar desconexão)
+while (s_client_fd >= 0) {
+    // envia qualquer backlog do ring
+    static char out[1024];
+    size_t n = rbuf_snapshot(out, sizeof(out));
+    if (n > 0) {
+        if (tcp_send_norm(s_client_fd, out, n) < 0) {  // <- usa normalização CRLF
+            close_client();
+            break;
         }
+    }
+
+    // detecta desconexão pelo RX
+    char sink[64];
+    int r = lwip_recv(s_client_fd, sink, sizeof(sink), MSG_DONTWAIT);
+    if (r == 0) { // orderly shutdown
+        close_client();
+        break;
+    } else if (r < 0) {
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            close_client();
+            break;
+        }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
+        // volta ao topo e recria o listen
     }
 }
 
-esp_err_t start_tcp_log_server_task(uint16_t port) {
+esp_err_t start_tcp_log_server_task(uint16_t port)
+{
     s_port = port;
-    if (s_srv_task) {
-        return ESP_OK;
-    }
+    if (s_srv_task) return ESP_OK;
     BaseType_t ok = xTaskCreate(tcp_log_server_task, "tcp_log_srv", 4096, NULL, 4, &s_srv_task);
     return (ok == pdPASS) ? ESP_OK : ESP_FAIL;
 }
 
-void stop_tcp_log_server_task(void) {
+void stop_tcp_log_server_task(void)
+{
     if (s_srv_task) {
         vTaskDelete(s_srv_task);
         s_srv_task = NULL;
     }
-    if (s_server_sock >= 0) {
-        close(s_server_sock);
-        s_server_sock = -1;
+    if (s_listen_fd >= 0) {
+        lwip_close(s_listen_fd);
+        s_listen_fd = -1;
     }
     close_client();
 }
-
-/* =========================== TEE de log =========================== */
-/*static vprintf_like_t s_prev_logger = NULL;
-
-static int tee_vprintf(const char *fmt, va_list args) {
-    (void)tcp_log_vprintf(fmt, args);
-    va_list copy;
-    va_copy(copy, args);
-    int r = s_prev_logger ? s_prev_logger(fmt, copy) : vprintf(fmt, copy);
-    va_end(copy);
-    return r;
-}
-
-void tcp_log_install_tee(void) {
-    if (!s_prev_logger) {
-        s_prev_logger = esp_log_set_vprintf(tee_vprintf);
-    }
-}
-
-void tcp_log_uninstall_tee(void) {
-    if (s_prev_logger) {
-        (void)esp_log_set_vprintf(s_prev_logger);
-        s_prev_logger = NULL;
-    }
-}*/

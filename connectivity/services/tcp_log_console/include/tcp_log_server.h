@@ -20,6 +20,13 @@ void      stop_tcp_log_server_task(void);
 int       tcp_log_vprintf(const char *fmt, va_list args);
 bool      tcp_log_client_connected(void);
 
+// Estado do servidor/cliente
+bool tcp_log_is_listening(void);
+bool tcp_log_has_client(void);
+
+// Checagem ativa de “porta ocupada” (alguém já fez bind na 3333)
+bool tcp_log_port_in_use(int port);
+
 // ---- NOVO: Ring buffer + endpoint HTTP ----
 // Registra o endpoint GET /logs no seu httpd existente.
 typedef void* httpd_handle_t; // forward se o projeto já define, ok manter aqui
@@ -31,6 +38,8 @@ esp_err_t tcp_log_register_http_endpoint(void *httpd_handle, const char *path);
 void tcp_log_uninstall_tee(void);*/
 
 void      tcp_log_force_close_client(void);
+
+
 #ifdef __cplusplus
 }
 #endif

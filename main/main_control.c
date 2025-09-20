@@ -37,6 +37,9 @@
 
 #include "tcp_log_server.h"  
 #include "mqtt_publisher.h"
+#include "wifi_softap_sta.h"
+#include "esp_netif.h"
+#include <lwip/netdb.h>
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 
@@ -60,6 +63,12 @@ static const char *TAG = "Main_Control";
 #define SAVE_ENERGY_FAILED   (1u << 3)  // use um bit livre; ajuste se 1<<3 já estiver em uso
 #endif
 
+
+// Guard de sessão sem mutex/alocação
+static volatile bool s_send_in_progress = false;
+static portMUX_TYPE s_send_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_last_send_ticks = 0;   // (opcional) debounce temporal
+
 extern uint32_t ulp_inactivity;
 
 extern bool wakeup_inactivity;
@@ -80,6 +89,7 @@ void TimeManager_Task(void* pvParameters);
 static void save_last_processed_minute(int minute);
 static int load_last_processed_minute(void);
 static void lte_send_data_to_server(void);
+static void wifi_send_data_to_server(void);
 static uint8_t save_sensor_data(void);
 //static void update_system_time(void);
 
@@ -269,6 +279,116 @@ static void lte_send_data_to_server(void){
 		  }
        }
 }
+
+static void wifi_send_data_to_server(void)
+{
+    // ----------------- Guard de sessão (sem mutex) -----------------
+    bool already_sending;
+    portENTER_CRITICAL(&s_send_mux);
+    already_sending = s_send_in_progress;
+    if (!already_sending) s_send_in_progress = true;
+    portEXIT_CRITICAL(&s_send_mux);
+
+    if (already_sending) {
+        ESP_LOGW(TAG, "Envio já em progresso; ignorando novo trigger.");
+        return;
+    }
+
+    // (Opcional) Debounce de 15s para qualquer fonte ruidosa
+    uint32_t now = xTaskGetTickCount();
+    if (s_last_send_ticks && (now - s_last_send_ticks) < pdMS_TO_TICKS(15000)) {
+        ESP_LOGW(TAG, "Debounce envio (15s): ignorando.");
+        portENTER_CRITICAL(&s_send_mux);
+        s_send_in_progress = false;
+        portEXIT_CRITICAL(&s_send_mux);
+        return;
+    }
+    s_last_send_ticks = now;
+
+    // Levanta “rede ativa” para bloquear deep-sleep durante o envio
+    Receive_NetConnect_Task_ON = true;
+    if (xQueue_NetConnect) {
+        bool v = true;
+        xQueueSend(xQueue_NetConnect, &v, 0);
+    }
+
+    // ----------------- Liga Wi-Fi (headless: STA-only) -----------------
+    wifi_mode_t m = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&m);
+
+    if (m != WIFI_MODE_STA && m != WIFI_MODE_APSTA) {
+        // em alguns boots, o loop/netif já existem: trate INVALID_STATE como OK
+        esp_err_t err = esp_event_loop_create_default();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto done;
+
+        err = esp_netif_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto done;
+
+        if (start_wifi_ap_sta() != ESP_OK) {
+            ESP_LOGW(TAG, "Falha ao iniciar WiFi.");
+            goto done;
+        }
+        wifi_ap_force_disable(); // garante STA-only no modo headless
+    }
+
+    // ----------------- Espera por GOT_IP (até 20 s) -----------------
+    esp_netif_ip_info_t ip;
+    TickType_t t0 = xTaskGetTickCount();
+    while (true) {
+        memset(&ip, 0, sizeof(ip));
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+            ESP_LOGI(TAG, "GOT_IP: %s", ip4addr_ntoa((const ip4_addr_t*)&ip.ip));
+            break;
+        }
+        if ((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(20000)) {
+            ESP_LOGW(TAG, "Timeout aguardando GOT_IP; abortando envio.");
+            goto done;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    // ----------------- Pré-resolve DNS do broker (até ~5 s) -----------------
+    const char *host = get_mqtt_url(); // seu getter do host
+    if (!host || !host[0]) {
+        ESP_LOGE(TAG, "Host MQTT vazio; abortando.");
+        goto done;
+    }
+    bool resolved = false;
+    for (int i = 0; i < 10; ++i) { // 10 * 500 ms
+        struct addrinfo *ai = NULL;
+        if (getaddrinfo(host, NULL, NULL, &ai) == 0 && ai) {
+            freeaddrinfo(ai);
+            resolved = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (!resolved) {
+        ESP_LOGW(TAG, "DNS não respondeu para '%s'; abortando envio.", host);
+        goto done;
+    }
+
+    // ----------------- Publica (1x) -----------------
+    mqtt_wifi_publish_now();  // internamente atualiza índices se sucesso
+
+done:
+    // Baixa “rede ativa”
+    Receive_NetConnect_Task_ON = false;
+    if (xQueue_NetConnect) {
+        bool v = false;
+        xQueueSend(xQueue_NetConnect, &v, 0);
+    }
+
+    // Libera o guard
+    portENTER_CRITICAL(&s_send_mux);
+    s_send_in_progress = false;
+    portEXIT_CRITICAL(&s_send_mux);
+}
+
+
+
+
 void init_queue_notification(void)
 {
   xQueue_Factory_Control = xQueueCreate(2, sizeof(Receive_FactoryControl_Task_ON));
@@ -428,15 +548,14 @@ save_sensor_data_rs485();
 		 if (has_network_http_enabled()||has_network_mqtt_enabled()){
 			 
 			 if (has_activate_sta()){
-				 mqtt_wifi_publish_now();
-			     } 
-			 else{
-				   if (!Receive_NetConnect_Task_ON &&!wifi_on){
+			     wifi_send_data_to_server();
+			     }else{
+				       if (!Receive_NetConnect_Task_ON &&!wifi_on){
 					   lte_send_data_to_server();
 				      }
 				  } 
 		     }
-       printf(">>>>Tem dados para enviar<<<\n");
+//       printf(">>>>Tem dados para enviar<<<\n");
 	  }
     
     if (!ap_active)
