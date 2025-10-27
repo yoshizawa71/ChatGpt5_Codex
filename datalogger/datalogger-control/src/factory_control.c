@@ -1586,7 +1586,7 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     
     if (addr <= 0 || addr > 247) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
 
@@ -1594,7 +1594,7 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     if (!wifi_ap_is_running()) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":false,\"error\":\"ap_suspended\"}");
         return ESP_OK;
     }
 
@@ -1605,7 +1605,7 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     if (C->backoff_until && now_before(now, C->backoff_until)) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
+        httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":false,\"error\":\"backoff\"}");
         return ESP_OK;
     }
 
@@ -1616,22 +1616,24 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+        cJSON_AddBoolToObject(root, "busy", false);
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":false}");
         free(json); cJSON_Delete(root);
         return ESP_OK;
     }
 
     // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
-     if (C->inflight || s_global_inflight) {
+    if (C->inflight || s_global_inflight) {
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+        cJSON_AddBoolToObject(root, "busy", true);
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":true}");
         free(json); cJSON_Delete(root);
         return ESP_OK;
     }
@@ -1678,7 +1680,7 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":true}");
         free(json); cJSON_Delete(root);
         C->inflight = false;
         s_global_inflight = false;
@@ -1712,9 +1714,10 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "alive", alive);
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
     cJSON_AddBoolToObject(root, "exception", false);
+    cJSON_AddBoolToObject(root, "busy", false);
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
+    httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"busy\":false}");
     free(json); cJSON_Delete(root);
     return ESP_OK;
 }

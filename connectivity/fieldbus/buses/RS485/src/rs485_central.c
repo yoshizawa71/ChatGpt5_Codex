@@ -41,25 +41,7 @@
         return ESP_ERR_TIMEOUT;
     }
 
-  /*  // 2) dispatcher central: lê todos e retorna vetor heterogêneo de medições
-    int n = rs485_poll_all(list, (size_t)count, meas, RS485_MAX_MEAS);
-     if (n < 0) {
-         ESP_LOGW(TAG, "rs485_poll_all falhou (err=%d)", n);
-         return ESP_FAIL;
-     }
-     if (n == 0) {
-         ESP_LOGI(TAG, "Nenhum sensor RS485 cadastrado/legível no momento.");
-         return ESP_ERR_NOT_FOUND;
-     }
-
-     int w = save_measurements_to_sd(meas, (size_t)n);
-     if (w <= 0) {
-         ESP_LOGW(TAG, "Nada gravado no SD (w=%d)", w);
-         return ESP_FAIL;
-     }
-     ESP_LOGI(TAG, "Centralizado: lidos=%d gravados=%d", n, w);
-     return ESP_OK;*/
-     esp_err_t ret = ESP_OK;
+    esp_err_t ret = ESP_OK;
 
     // 2) dispatcher central: lê todos e retorna vetor heterogêneo de medições
     int n = rs485_poll_all(list, (size_t)count, meas, RS485_MAX_MEAS);
@@ -73,6 +55,9 @@
         ret = ESP_ERR_NOT_FOUND;
         goto out;
     }
+
+    modbus_guard_end(&g);
+    g.locked = false;
 
     int w = save_measurements_to_sd(meas, (size_t)n);
     if (w <= 0) {

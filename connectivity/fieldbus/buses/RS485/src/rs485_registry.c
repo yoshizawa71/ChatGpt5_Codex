@@ -215,9 +215,7 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
         }
         
        case RS485_TYPE_ENERGIA: {
-//            float i1 = 0.0f, i2 = 0.0f, i3 = 0.0f;
             float I[3] = {0};
- //           if (energy_meter_read_currents((uint8_t)sensor->address, &i1, &i2, &i3) != ESP_OK)
             if (energy_meter_read_currents((uint8_t)sensor->address, I) != ESP_OK)
                 return -2;
             int wr = 0;
@@ -226,7 +224,6 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
                 out[wr++] = (rs485_measurement_t){
                     .channel = sensor->channel,
                     .kind    = RS485_MEAS_I_RMS,
-//                    .value   = i1
                     .value   = I[0]
                 };
             }
@@ -235,7 +232,6 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
                 out[wr++] = (rs485_measurement_t){
                     .channel = sensor->channel,
                     .kind    = RS485_MEAS_I_RMS,
- //                   .value   = i2
                     .value   = I[1]
                 };
             }
@@ -244,7 +240,6 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
                 out[wr++] = (rs485_measurement_t){
                     .channel = sensor->channel,
                     .kind    = RS485_MEAS_I_RMS,
-//                    .value   = i3
                     .value   = I[2]
                 };
             }

@@ -86,11 +86,9 @@ static inline esp_err_t mb_send_locked(mb_param_request_t *req,
                                        TickType_t tmo_ticks)
 {
     if (!req || !data_buf || req->reg_size == 0) return ESP_ERR_INVALID_ARG;
-    
-  //  if (s_mb_req_mutex) xSemaphoreTake(s_mb_req_mutex, tmo_ticks);
+
     if (s_mb_req_mutex) xSemaphoreTakeRecursive(s_mb_req_mutex, tmo_ticks);
     esp_err_t err = mbc_master_send_request(req, data_buf);
-  //  if (s_mb_req_mutex) xSemaphoreGive(s_mb_req_mutex);
     if (s_mb_req_mutex) xSemaphoreGiveRecursive(s_mb_req_mutex);
     return err;
 }
@@ -199,22 +197,19 @@ esp_err_t modbus_master_init(void)
 
     logmux_notify_rs485_active((uart_port_t)MB_PORT_NUM, true);
   
-/*if (!s_mb_req_mutex) {
-    s_mb_req_mutex = xSemaphoreCreateMutex();*/
     if (!s_mb_req_mutex) {
         s_mb_req_mutex = xSemaphoreCreateRecursiveMutex();
-    if (!s_mb_req_mutex) {
-//        ESP_LOGE(TAG, "xSemaphoreCreateMutex() NO MEM");
-        ESP_LOGE(TAG, "xSemaphoreCreateRecursiveMutex() NO MEM");
-        // rollback seguro:
-        logmux_notify_rs485_active((uart_port_t)MB_PORT_NUM, false);
-        (void) mbc_master_destroy();
-        uart_flush_input(MB_PORT_NUM);
-        uart_set_mode(MB_PORT_NUM, UART_MODE_UART);
-        s_master_handler = NULL;
-        return ESP_ERR_NO_MEM;
+        if (!s_mb_req_mutex) {
+            ESP_LOGE(TAG, "xSemaphoreCreateRecursiveMutex() NO MEM");
+            // rollback seguro:
+            logmux_notify_rs485_active((uart_port_t)MB_PORT_NUM, false);
+            (void) mbc_master_destroy();
+            uart_flush_input(MB_PORT_NUM);
+            uart_set_mode(MB_PORT_NUM, UART_MODE_UART);
+            s_master_handler = NULL;
+            return ESP_ERR_NO_MEM;
+        }
     }
-}
     s_master_ready = true;
     ESP_LOGI(TAG, "Master RTU inicializado e pronto.");
     
@@ -271,15 +266,14 @@ esp_err_t modbus_master_deinit(void)
 /* =================== Guard público (usa o MESMO mutex) =================== */
 bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms)
 {
-    if (!g) return false;
-    g->locked = false;
-    if (!s_mb_req_mutex) return false;
-    if (xSemaphoreTakeRecursive(s_mb_req_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
-        g->locked = true;
-        return true;
+    if (!g || !s_mb_req_mutex) {
+        return false;
     }
-    ESP_LOGW("MB/SESS", "timeout aguardando exclusividade do Modbus");
-    return false;
+    g->locked = (xSemaphoreTakeRecursive(s_mb_req_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+    if (!g->locked) {
+        ESP_LOGW("MB/SESS", "timeout aguardando exclusividade do Modbus");
+    }
+    return g->locked;
 }
 
 void modbus_guard_end(modbus_guard_t *g)
