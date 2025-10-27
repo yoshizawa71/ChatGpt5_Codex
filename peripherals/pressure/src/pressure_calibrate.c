@@ -14,6 +14,7 @@
 #include <math.h> // Adicionado para usar fabs
 
 #define TAG "PRESSURE_CALIBRATE"
+static const char *TAG_SENSOR  = "SENSOR";
 
 #define NUM_CAL_POINTS 5
 #define SENSOR_DISCONNECTED_THRESHOLD 0.01f
@@ -225,12 +226,12 @@ esp_err_t load_reference_points_sensor2(reference_point_t *points) {
 
 float get_calibrated_pressure(sensor_t leitor, pressure_unit_t unidade, bool *sensor_ok) {
     float voltage = oneshot_analog_read(leitor);
-    printf("[SENSOR] Leitura atual: %.3f V\n", voltage);
+    ESP_LOGI(TAG_SENSOR, "Leitura atual: %.3f V\n", voltage);
     ESP_LOGI(TAG, "Unidade solicitada: %d", unidade);
 
     if (voltage < SENSOR_DISCONNECTED_THRESHOLD) {
         *sensor_ok = false;
-        printf("[SENSOR] Sensor possivelmente desconectado ou leitura inválida.\n");
+        ESP_LOGI(TAG_SENSOR,"Sensor possivelmente desconectado ou leitura inválida.\n");
         return 0.0f;
     }
 

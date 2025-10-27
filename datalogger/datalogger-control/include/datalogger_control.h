@@ -298,6 +298,8 @@ bool is_led_enabled(void);
 void enable_led(bool en);
 //----------------------------*
 
+uint8_t get_weg_payload_mode(void);
+void set_weg_payload_mode(uint8_t mode);
 
 
 #endif

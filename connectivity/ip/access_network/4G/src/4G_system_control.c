@@ -121,13 +121,13 @@ if (net_status==U_CELL_NET_STATUS_REGISTERED_HOME || net_status==U_CELL_NET_STAT
   Send_NetConnect_Task_ON=false;
   xQueueSend(xQueue_NetConnect,(void *)&Send_NetConnect_Task_ON, (TickType_t)0);
   deinit_LTE_System();
-  
    
 }
 
 void init_LTE_System(void)
 {
-	//set_cpu_freq_rtc(80);
+//	 cpu_boost_begin_160();
+set_cpu_freq_rtc(160);
 	if (LTE_System_TaskHandle == NULL && network_time_TaskHandle==NULL)
 	   {
 		Send_NetConnect_Task_ON = true;

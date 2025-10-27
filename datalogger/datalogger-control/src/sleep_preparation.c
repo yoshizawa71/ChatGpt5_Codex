@@ -9,8 +9,8 @@
  * - Pequenos delays para drenar buffers
  */
 
+#include "sdkconfig.h"
 #include "sleep_preparation.h"
-#include "ifdef_features.h"
 #include <stdio.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -114,7 +114,7 @@ void sleep_prepare(bool maybe_stop_wifi)
 #endif
 
     // ========== 2) Modbus: quiesce (se guard existir) + deinit ==========
-#if CONFIG_MODBUS_GUARD_ENABLE && CONFIG_MODBUS_ENABLE
+#if CONFIG_MODBUS_GUARD_ENABLE && CONFIG_MODBUS_SERIAL_ENABLE
     // Bloqueia novas sessões (se a API existir)
     if (modbus_guard_block_new_sessions) {
         (void)modbus_guard_block_new_sessions(pdMS_TO_TICKS(100));
@@ -125,7 +125,7 @@ void sleep_prepare(bool maybe_stop_wifi)
     }
     // Deinit do master (tolerante a “já deinitado”)
     (void)modbus_master_deinit();
-#elif CONFIG_MODBUS_ENABLE
+#elif CONFIG_MODBUS_SERIAL_ENABLE
     // Sem guard, apenas deinit (pode retornar INVALID_STATE se já estiver fechado)
     (void)modbus_master_deinit();
 #endif

@@ -1,15 +1,16 @@
-#include "ifdef_features.h" 
+
 #include "factory_control.h"
 #include <string.h>
 #include <fcntl.h>
 #include <datalogger_control.h>
+#include "battery_monitor.h"
 #include "datalogger_driver.h"
 #include <time.h>
 #include "esp_timer.h"
+#include "rs485_central.h"
 #include "sara_r422.h"
 #include "sleep_preparation.h"
 #include "tcp_log_server.h"
-#include "modbus_rtu_master.h"
 #include "log_mux.h"
 #include "wifi_softap_sta.h"
 #include "driver/sdmmc_host.h"
@@ -20,10 +21,7 @@
 #include "esp_event.h"
 #include "esp_vfs.h"
 #include "cJSON.h"
-#include "mdns.h"
-
 #include "esp_littlefs.h"
-#include "lwip/apps/netbiosns.h"
 #include "datalogger_driver.h"
 #include "oled_display.h"
 #include "sdmmc_driver.h"
@@ -39,13 +37,30 @@
 #include "system.h"
 #include "TCA6408A.h"
 
-#include "rs485_registry.h"
-#include "xy_md02_driver.h"
-#include "rs485_manager.h"
-#include "rs485_hw.h" 
+
 #include "freertos/FreeRTOS.h"
 #include "modbus_guard_session.h"
 #include <stdatomic.h>
+#include "portal_state.h"
+#include "rs485_registry.h"
+
+#include "sdkconfig.h"
+//========não é comentário===========
+#if CONFIG_REMOTE_MDNS
+  #include "mdns.h"
+  #include "lwip/apps/netbiosns.h"
+#endif
+
+#if CONFIG_MODBUS_SERIAL_ENABLE
+  #include "modbus_rtu_master.h"
+  #include "rs485_manager.h"
+  #include "rs485_hw.h" 
+  #include "rs485_registry.h"
+  #include "xy_md02_driver.h"  // temperature_rs485_probe()
+  #include "energy_jsy_mk_333_driver.h"   // energy_rs485_probe()
+
+#endif
+
 
 #define FACTORY_CONFIG_TIMER   180 //Tempo do factor config ficar ativo
 #define SENSOR_DISCONNECTED_THRESHOLD 0.1   // Exemplo: menor que 0.1 é considerado desconectado
@@ -60,10 +75,6 @@
 #warning "FC_TRACE_INTERACTION = 0 (este arquivo)"
 #endif
 
-#if CONFIG_MODBUS_ENABLE
-  #include "modbus_rtu_master.h"
-  #include "rs485_manager.h"
-#endif
 
 
 #if FC_TRACE_INTERACTION
@@ -337,6 +348,7 @@ static void start_factory_routine(void)
     init_mdns();
     init_server_fs();
     start_server();
+    portal_state_set_active(true);
 }
 
 static void stop_factory_server(void)
@@ -344,10 +356,12 @@ static void stop_factory_server(void)
 	deinit_mdns();
 //	deinit_server_fs();
 	stop_server(server);
-
 	return;
 	 
 }
+
+// ================== mDNS (implementação / stubs) ==================
+#if CONFIG_REMOTE_MDNS
 
 static void initialise_mdns(void)
 {
@@ -356,17 +370,19 @@ static void initialise_mdns(void)
     mdns_instance_name_set(MDNS_HOST_NAME);
 
     mdns_txt_item_t serviceTxtData[] = {
-        {"board", "esp32"},
-        {"path", "/"}
+        { "board", "esp32" },
+        { "path",  "/"     },
     };
 
-    ESP_ERROR_CHECK(mdns_service_add("ESP32-WebServer", "_http", "_tcp", 80, serviceTxtData,
-                                     sizeof(serviceTxtData) / sizeof(serviceTxtData[0])));
+    ESP_ERROR_CHECK(
+        mdns_service_add("ESP32-WebServer", "_http", "_tcp", 80,
+                         serviceTxtData, sizeof(serviceTxtData)/sizeof(serviceTxtData[0]))
+    );
 }
 
 static void deinitialise_mdns(void)
 {
-	mdns_free();
+    mdns_free();
 }
 
 static void init_mdns(void)
@@ -381,6 +397,16 @@ static void deinit_mdns(void)
     deinitialise_mdns();
     netbiosns_stop();
 }
+
+#else  // !CONFIG_REMOTE_MDNS
+
+static inline void initialise_mdns(void) {}
+static inline void deinitialise_mdns(void) {}
+static inline void init_mdns(void)  {}
+static inline void deinit_mdns(void) {}
+
+#endif  // CONFIG_REMOTE_MDNS
+// ================== fim mDNS ==================
 
 static esp_err_t init_server_fs(void)
 {
@@ -615,7 +641,7 @@ httpd_register_uri_handler(server, &rele_post_uri);
     
 //----------------------------------------------------------
 //           RS485 Config
-#if CONFIG_MODBUS_ENABLE
+#if CONFIG_MODBUS_SERIAL_ENABLE
 // ---------------- RS485 CONFIG GET ----------------
     httpd_uri_t rs485_config_get_uri = {
         .uri      = "/rs485ConfigGet",
@@ -744,6 +770,9 @@ static esp_err_t stop_server(httpd_handle_t server)
 //---------------------------------------
 void wifi_portal_on_ap_start(void) {
 	
+	  // BOOST 240 para AP+HTTP
+//    cpu_boost_begin_240();
+    
 	if (!has_always_on()) {
     return; // headless: não ligar HTTP/portal aqui
        }
@@ -758,7 +787,7 @@ void wifi_portal_on_ap_start(void) {
 }
 //---------------------------------------
 // --- Console TCP: wrappers simples para ligar/desligar em um lugar só ---
-static void console_tcp_enable(uint16_t port)
+/*static void console_tcp_enable(uint16_t port)
 {
     start_tcp_log_server_task(port);        // seu servidor TCP (não bloqueante)
 //    logmux_set_tcp_writer(tcp_log_vprintf); // writer do tcp_log_server.c
@@ -767,7 +796,39 @@ static void console_tcp_enable(uint16_t port)
     logmux_enable_uart(false);              // mantém UART0 muda
     ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
     
+}*/
+
+static void console_tcp_enable(uint16_t port)
+{
+    start_tcp_log_server_task(port);        // sobe o servidor (não bloqueante)
+
+#if CONFIG_MODBUS_SERIAL_ENABLE
+
+  #if (CONFIG_RS485_UART_NUM == 0)
+    // RS-485 NA UART0 → cale a UART0 e use TCP para logs
+    // (assumindo que app_main já chamou logmux_early_init quando UART0)
+    logmux_init(tcp_log_vprintf);     // ok se idempotente
+    logmux_enable_tcp(true);
+    logmux_enable_uart(false);
+
+  #else
+    // RS-485 na UART1/2 → mantenha UART0 (TeraTerm) e, se quiser, TCP também
+    logmux_init(tcp_log_vprintf);
+    logmux_enable_tcp(true);          // coloque false se não quiser log via TCP
+    logmux_enable_uart(true);         // UART0 ativa
+
+  #endif
+
+#else
+    // Modbus serial DESLIGADO → apenas habilite logs (UART0 + TCP)
+    logmux_init(tcp_log_vprintf);
+    logmux_enable_tcp(true);
+    logmux_enable_uart(true);
+#endif
+
+    ESP_LOGI("CONSOLE", "TCP log console enabled on port %u", port);
 }
+
 
 static void console_tcp_disable(void) {
     // Desliga o writer TCP e reabilita completamente a UART
@@ -797,30 +858,63 @@ static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filepa
     } else if (CHECK_FILE_EXTENSION(filepath, ".ico")) {
         type = "image/x-icon";
     } else if (CHECK_FILE_EXTENSION(filepath, ".svg")) {
-        type = "text/xml";
+        type = "image/svg+xml";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".woff2")) {
+        type = "font/woff2";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".jpg") || CHECK_FILE_EXTENSION(filepath, ".jpeg")) {
+        type = "image/jpeg";
     }
     return httpd_resp_set_type(req, type);
 }
 
+
 static esp_err_t rest_common_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
-    char filepath[FILE_PATH_MAX];
 
+    char filepath[FILE_PATH_MAX];
     rest_server_context_t *rest_context = (rest_server_context_t *)req->user_ctx;
+
+    // começa com base_path montado ("/esp_web_server")
     strlcpy(filepath, rest_context->base_path, sizeof(filepath));
-    if (req->uri[strlen(req->uri) - 1] == '/') {
-        strlcat(filepath, "/Home.html", sizeof(filepath));
-    } else if(strcmp(req->uri, "/ConfigOperationLogin.html") == 0 || strcmp(req->uri, "/ConfigOperation.html") == 0) {
-//    } else if(strcmp(req->uri, "/ConfigAdmin.html") == 0 || strcmp(req->uri, "/ConfigOperation.html") == 0) {
-        if(super_user_logged) {
-            strlcat(filepath, "/ConfigOperation.html", sizeof(filepath));
-        } else {
-            strlcat(filepath, "/ConfigOperationLogin.html", sizeof(filepath));
-        }
-    } else {
-        strlcat(filepath, req->uri, sizeof(filepath));
+
+    // Trabalha numa cópia do URI que possamos "podar" o prefixo
+    const char *uri = req->uri; // exemplo: "/esp_web_server/Home/html/Home.html"
+    size_t base_len = strlen(SERVER_BASE_PATH);
+
+    // Se vier com o prefixo "/esp_web_server", remove da visão do FS
+    if (strncmp(uri, SERVER_BASE_PATH, base_len) == 0) {
+        uri += base_len; // agora fica "/Home/html/Home.html"
     }
+
+    // Normaliza vazio/raiz e "/" para cair no novo Home
+    if (uri[0] == '\0' || (uri[0] == '/' && uri[1] == '\0')) {
+        uri = "/Home/html/Home.html";
+    }
+
+    // Se terminar com "/", também envia o Home
+    size_t ulen = strlen(uri);
+    if (ulen > 0 && uri[ulen - 1] == '/') {
+        uri = "/Home/html/Home.html";
+    }
+
+    // Regras especiais do seu login continuam valendo,
+    // mas agora avaliando sobre 'uri' já sem o prefixo:
+    if (strcmp(uri, "/Operation/html/ConfigOperationLogin.html") == 0 ||
+        strcmp(uri, "/Operation/html/ConfigOperation.html")     == 0)
+    {
+        if (super_user_logged) {
+            uri = "/Operation/html/ConfigOperation.html";
+        } else {
+            uri = "/Operation/html/ConfigOperationLogin.html";
+        }
+    }
+
+    // Monta o caminho final no VFS LittleFS:
+    // "/esp_web_server" + "/Home/html/Home.html" => OK
+    strlcat(filepath, uri, sizeof(filepath));
+
+    // --- DAQUI PRA BAIXO MANTENHA O SEU CÓDIGO EXISTENTE ---
     int fd = open(filepath, O_RDONLY, 0);
     if (fd == -1) {
         ESP_LOGE(TAG, "Failed to open file : %s", filepath);
@@ -833,7 +927,6 @@ static esp_err_t rest_common_get_handler(httpd_req_t *req)
     char *chunk = rest_context->scratch;
     ssize_t read_bytes;
     do {
-        /* Read file in chunks into the scratch buffer */
         read_bytes = read(fd, chunk, SCRATCH_BUFSIZE);
         if (read_bytes == -1) {
             ESP_LOGE(TAG, "Failed to read file : %s", filepath);
@@ -841,25 +934,20 @@ static esp_err_t rest_common_get_handler(httpd_req_t *req)
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read file");
             return ESP_FAIL;
         } else if (read_bytes > 0) {
-            /* Send the buffer contents as HTTP response chunk */
             if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
                 close(fd);
-                ESP_LOGE(TAG, "File sending failed!");
-                /* Abort sending file */
                 httpd_resp_sendstr_chunk(req, NULL);
-                /* Respond with 500 Internal Server Error */
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
                 return ESP_FAIL;
             }
         }
     } while (read_bytes > 0);
-    /* Close file after sending complete */
     close(fd);
     ESP_LOGI(TAG, "File sending complete: %s", filepath);
-    /* Respond with an empty chunk to signal HTTP response completion */
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
+
 
 
 static esp_err_t get_time_handler(httpd_req_t *req)
@@ -1133,7 +1221,7 @@ static esp_err_t config_operation_post_handler(httpd_req_t *req)
 // GET /rs485ConfigGet  -> devolve JSON { "sensors": [...] }
 // 1) se existir RS485_MAP_UI_PATH (JSON), entrega-o (contém type/subtype);
 // 2) senão, carrega do binário e monta JSON com type/subtype vazios.
-#if CONFIG_MODBUS_ENABLE
+#if CONFIG_MODBUS_SERIAL_ENABLE
 static esp_err_t rs485_config_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
@@ -1173,14 +1261,27 @@ for (size_t i = 0; i < count; ++i) {
              (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
 }
 
-    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
+/*    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
         cJSON *it = cJSON_CreateObject();
         cJSON_AddNumberToObject(it, "channel", map[i].channel);
         cJSON_AddNumberToObject(it, "address", map[i].address);
         cJSON_AddStringToObject(it, "type", "");     // sem informação no binário
         cJSON_AddStringToObject(it, "subtype", "");  // idem
         cJSON_AddItemToArray(arr, it);
-    }
+    }*/
+    
+    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
+        if (map[i].channel == 0 || map[i].address < 1 || map[i].address > 247) {
+            continue; // [FIX] ignora lixo legado
+        }
+        cJSON *it = cJSON_CreateObject();
+        cJSON_AddNumberToObject(it, "channel", map[i].channel);
+        cJSON_AddNumberToObject(it, "address", map[i].address);
+        cJSON_AddStringToObject(it, "type", "");
+        cJSON_AddStringToObject(it, "subtype", "");
+        cJSON_AddItemToArray(arr, it);
+    }    
+    
     cJSON_AddItemToObject(root, "sensors", arr);
 
     char *json = cJSON_PrintUnformatted(root);
@@ -1196,6 +1297,16 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
+    if (wifi_is_sta_transitioning()) {
+        const char *u = req->uri;
+        if (strcmp(u, "/rs485Register") != 0 && strcmp(u, "/rs485ConfigSave") != 0) {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"error\":\"wifi_sta_connecting\"}");
+            return ESP_OK;
+        }
+        // para RS485Register/Save, seguimos adiante
+    }
     // --- Lê corpo da requisição ---
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -1231,6 +1342,13 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
             httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"sensors_array_or_single_missing\"}");
             return ESP_OK;
         }
+    }
+    // [FIX] Rejeitar lista vazia — evita sobrescrever com nada
+       if (cJSON_GetArraySize(arr) == 0) {
+           cJSON_Delete(root);
+           httpd_resp_set_type(req, "application/json");
+           httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"empty_sensor_list\"}");
+           return ESP_OK;
     }
 
     // Carrega a config atual para fazermos "upsert"
@@ -1291,29 +1409,27 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         int addr = jaddr->valueint;
         const char *ty = jtype->valuestring;
         const char *st = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
+ // [FIX] validação de faixa/campos     
+        if (ch <= 0 || addr < 1 || addr > 247 || ty == NULL || ty[0] == '\0') {
+           cJSON_Delete(root);
+           cJSON_Delete(ui_root);
+           httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 item");
+           return ESP_FAIL;
+           }
+ //========++++++++==========        
 
 ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'", ch, addr, ty, st);
-        // --- Ping curto para validar slave ---
-        uint8_t used_fc = 0;
-        bool exception = false; // <== corrige tipo
-        bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(150), &used_fc, &exception);
-        if (!alive) {
-            // responde falha (o front mostra msg e não acende o LED)
-            cJSON *resp = cJSON_CreateObject();
-            cJSON_AddBoolToObject(resp, "ok", false);
-            cJSON_AddStringToObject(resp, "msg", "dispositivo não respondeu");
-            char *out = cJSON_PrintUnformatted(resp);
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, out ? out : "{\"ok\":false}");
-            free(out);
-            cJSON_Delete(resp);
-            cJSON_Delete(root);
-            cJSON_Delete(ui_root);
-            return ESP_OK;
-        }
-        cJSON_AddNumberToObject(it, "used_fc", used_fc);
-
-ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
+// --- Ping curto (best-effort): nunca bloquear o cadastro
+uint8_t used_fc = 0;
+bool exception = false;
+bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(200), &used_fc, &exception);
+if (alive) {
+    cJSON_AddNumberToObject(it, "used_fc", used_fc);
+    ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
+} else {
+    ESP_LOGW("RS485_REG_GLUE", "PING FAIL durante registro (addr=%d). Prosseguindo com cadastro.", addr);
+    // não retorna erro; a leitura periódica descobrirá FC/estado depois
+}
 
         // --- Upsert no binário (replace se já existir, senão append) ---
         sensor_map_t cand = {0};
@@ -1352,9 +1468,17 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             if (cJSON_IsNumber(uch) && cJSON_IsNumber(uad) &&
                 uch->valueint == ch && uad->valueint == addr)
             {
-                // Atualiza type/subtype
+                // Atualiza type/subtype e, se conhecido, a FC usada no ping
                 cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(ty));
                 cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(st));
+                if (used_fc > 0) {
+                    cJSON *old_fc = cJSON_GetObjectItem(jt, "used_fc");
+                    if (cJSON_IsNumber(old_fc)) {
+                        old_fc->valuedouble = used_fc;
+                    } else {
+                        cJSON_AddNumberToObject(jt, "used_fc", used_fc);
+                    }
+                }
                 ui_replaced = true;
                 break;
             }
@@ -1365,6 +1489,9 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             cJSON_AddNumberToObject(newit, "address", addr);
             cJSON_AddStringToObject(newit, "type", ty);
             cJSON_AddStringToObject(newit, "subtype", st);
+            if (used_fc > 0) {
+                cJSON_AddNumberToObject(newit, "used_fc", used_fc);
+            }
             cJSON_AddItemToArray(ui_arr, newit);
         }
     }
@@ -1384,26 +1511,50 @@ for (size_t i = 0; i < count; ++i) {
         return ret;
     }
     ESP_LOGI("RS485_REG_GLUE", "POST/SAVE: OK (count=%u)", (unsigned)count);
+       /* Dispara UMA leitura central curta para validar e já gravar no SD.
+       Mantemos orçamento pequeno para não travar o front. */
+    {
+        esp_err_t e = rs485_central_poll_and_save(500);
+        ESP_LOGI("RS485_REG_GLUE", "central after save: %s", esp_err_to_name(e));
+    } 
 
-
-    // Persiste JSON do front
-    char *ui_json = cJSON_PrintUnformatted(ui_root);
-    if (ui_json) {
-        FILE *fw = fopen(RS485_MAP_UI_PATH, "wb");
-        if (fw) {
-            fwrite(ui_json, 1, strlen(ui_json), fw);
-            fclose(fw);
+    // Persiste JSON do front (RS485_MAP_UI_PATH)
+    // Mantemos isso aqui para que a lista renderizada no front
+    // reflita imediatamente o cadastro feito.
+    {
+        char *ui_json = cJSON_PrintUnformatted(ui_root);
+        if (ui_json) {
+            FILE *fw = fopen(RS485_MAP_UI_PATH, "wb");
+            if (fw) {
+                fwrite(ui_json, 1, strlen(ui_json), fw);
+                fclose(fw);
+            }
+            free(ui_json);
         }
-        free(ui_json);
     }
-    cJSON_Delete(ui_root);
 
-    // Sucesso
+    {
+        cJSON *resp = cJSON_CreateObject();
+        if (resp) {
+            cJSON_AddBoolToObject(resp, "ok", true);
+            // opcional: se você preservou a variável 'alive/used_fc' do ping,
+            // pode incluir informações extras:
+            // cJSON_AddBoolToObject(resp, "alive", alive);
+            // if (alive) cJSON_AddNumberToObject(resp, "used_fc", used_fc);
+            char *out = cJSON_PrintUnformatted(resp);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, out ? out : "{\"ok\":true}");
+            free(out);
+            cJSON_Delete(resp);
+        } else {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"ok\":true}");
+        }
+    }
     cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
+    cJSON_Delete(ui_root);
     return ESP_OK;
-}
+ }
 
 // GET /rs485Ping?channel=X&address=Y[&ts=...]
 // Versão leve: NÃO faz "probe" de driver (rs485_registry_*); apenas verifica presença.
@@ -1411,21 +1562,28 @@ for (size_t i = 0; i < count; ++i) {
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
+//static volatile bool s_ping_busy = false;
 
-    const TickType_t PER_ADDR_MIN = pdMS_TO_TICKS(700);   // era 300 ms
-    const TickType_t GLOBAL_MIN   = pdMS_TO_TICKS(150);   // simples amortecedor global
+    const TickType_t PER_ADDR_MIN = pdMS_TO_TICKS(1200);  // era 300 ms
+    const TickType_t GLOBAL_MIN   = pdMS_TO_TICKS(300);   // simples amortecedor global
 
     static TickType_t s_global_last = 0;
+    static volatile bool s_global_inflight = false;
 
     char qbuf[64], param[16];
     int addr = 0;
+//    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
-    if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
+    
+        if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
+            /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
+            /* se quiser forçar um tipo no futuro, podemos usar req_type aqui */
         }
     }
+    
     if (addr <= 0 || addr > 247) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
@@ -1465,8 +1623,8 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    // Evita reentrância: se já tem ping em voo para esse endereço, devolve cache
-    if (C->inflight) {
+    // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
+     if (C->inflight || s_global_inflight) {
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
@@ -1480,25 +1638,70 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     C->inflight = true;
     s_global_last = now;
+    s_global_inflight = true;
+    
+    bool alive = false; 
+    uint8_t used_fc = 0x00; 
+    esp_err_t ret = ESP_OK;
 
- //   (void) modbus_master_init();
+        /* Autodetecção via REGISTRY: decide FC e tipo/subtipo batendo nos registradores corretos.
+       Mantemos fallback para o ping genérico para compatibilidade. */
+    rs485_type_t     det_type = RS485_TYPE_INVALID;
+    rs485_subtype_t  det_sub  = RS485_SUBTYPE_NONE;
+    const char      *det_name = NULL;
 
-/*    bool alive = false; uint8_t used_fc = 0x00;
-    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario*/
-      
-    bool alive = false; uint8_t used_fc = 0x00; esp_err_t ret = ESP_OK;
-    MB_SESSION_WITH(pdMS_TO_TICKS(300)) {
-        ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
-    }  
-      
+/*    MB_SESSION_WITH(pdMS_TO_TICKS(200)) {
+        bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
+        alive = ok;
+        ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
+        if (!ok) {
+             fallback legado: ping genérico 
+            ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
+        }
+    }*/
+    
+    modbus_guard_t g = {0};  
+//    if (!modbus_guard_try_begin(&g, 10)) {
+		bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
+    if (!got) {
+        // pequeno retry: dá uma chance de pegar o barramento entre leituras do central
+        vTaskDelay(pdMS_TO_TICKS(20));
+        got = modbus_guard_try_begin(&g, 40);   // janela total até ~120 ms no pior caso
+         }
+    if (!got) {
+		
+        // Barramento ocupado -> devolve CACHE + busy=true
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "busy", true);
+        cJSON_AddBoolToObject(root, "alive", C->alive);
+        cJSON_AddNumberToObject(root, "used_fc", C->fc);
+        cJSON_AddBoolToObject(root, "exception", false);
+        char *json = cJSON_PrintUnformatted(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
+        free(json); cJSON_Delete(root);
+        C->inflight = false;
+        s_global_inflight = false;
+        return ESP_OK;
+    }
+    // Com o barramento exclusivo, faz a autodetecção curta
+    {
+        bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
+        alive = ok;
+        ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
+    }
+    // Libera o barramento ANTES de montar a resposta
+    modbus_guard_end(&g);
+
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
     C->inflight = false;
+    s_global_inflight = false;
 
     // Circuit-breaker simples: se falhar 5x seguidas, faz backoff de 3 s
     if (ret != ESP_OK || !alive) {
         if (C->fails < 250) C->fails++;
-        if (C->fails >= 5) {
-            C->backoff_until = C->ts + pdMS_TO_TICKS(3000);
+        if (C->fails >= 2) {
+            C->backoff_until = C->ts + pdMS_TO_TICKS(2000);
         }
     } else {
         C->fails = 0;
@@ -1516,7 +1719,15 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-
+/* export: backend/config pode chamar para zerar um endereço específico */
+void rs485_ping_cache_invalidate(uint8_t addr)
+{
+    /* endereços Modbus válidos: 1..247; índice 0 é reservado */
+    const size_t N = sizeof(s_ping2) / sizeof(s_ping2[0]);
+    size_t idx = (size_t)addr;
+    if (idx == 0 || idx >= N) return;
+    memset(&s_ping2[idx], 0, sizeof(s_ping2[idx]));
+}
 // ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====
 static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
 {
@@ -1625,6 +1836,32 @@ for (size_t i = 0; i < wr; ++i) {
     
     ESP_LOGI("RS485_REG_GLUE", "DELETE OK: removed=%u remaining=%u",
          (unsigned)removed, (unsigned)wr);
+         
+      /* ---- FAXINA pós-remoção ----
+     *
+     * 1) Limpa HINTS (baud/paridade/stopbits/used_fc) do addr removido,
+     *    para não “vazar” autodetect antigo.
+     * 2) Invalida cache de PING para o addr (se exportado no backend).
+     * 3) (Opcional) Se quiser fazer a comparação completa “antes vs depois”
+     *    para múltiplos removidos, use config_rs485_on_registry_saved(out, wr).
+     */
+    if (removed > 0) {
+        /* Se um mesmo addr puder existir em múltiplos canais e você removeu apenas um,
+           e ainda há outro com o mesmo addr no vetor 'out', evite limpar o hint.
+           Aqui, como regra simples, limpamos somente se 'addr' não está mais presente. */
+        bool still_present = false;
+        for (size_t i = 0; i < wr; ++i) {
+            if (out[i].address == (uint8_t)addr) { still_present = true; break; }
+        }
+        if (!still_present) {
+            (void) config_rs485_hint_clear((uint8_t)addr);
+        }
+        /* Invalida o cache de ping para evitar retorno 'alive' do cache */
+        extern void rs485_ping_cache_invalidate(uint8_t addr); /* pode ser WEAK */
+        rs485_ping_cache_invalidate((uint8_t)addr);
+        /* Alternativa que cobre múltiplos removidos de uma vez:
+           config_rs485_on_registry_saved(out, (int)wr); */
+    }    
 
     // --- Resposta ---
     cJSON *resp = cJSON_CreateObject();
@@ -2059,6 +2296,7 @@ static void shutdown_task(void* pvParameters) {
      sleep_prepare(true);                          
      printf(">>>>>>>>>Shutdown finished<<<<<<<<\n");
      notify_timemanager_factory_off();   // fila para TimeManager dormir
+     portal_state_set_active(false);
      vTaskDelay(pdMS_TO_TICKS(300));
      vTaskDelete(NULL);
 }
@@ -2085,6 +2323,7 @@ static void factory_exit_common(uint32_t ap_silence_secs)
      if (first_factory_setup && has_factory_config()) {
         ESP_LOGI(TAG, "### RESTART ###");
         vTaskDelay(pdMS_TO_TICKS(50));
+        set_inactivity();
         first_factory_setup = false;
         esp_restart();                 // ← por último
     }  
@@ -2755,9 +2994,14 @@ vTaskDelay(pdMS_TO_TICKS(1000));
 
 void init_factory_task(void)
 {
+	set_cpu_freq_rtc(160);
+	server_comm_init(); // Inicializa o mutex recIndexMutex
+	battery_monitor_init(false);
+	//   calibrate_power_source(7.19f); // ajusta e salva se cololcar battery_monitor_init =true
+	 battery_monitor_update();
 	user_initiated_exit = false;  // para não bloquear religamento do AP
 	start_wifi_ap_sta();
-	#if CONFIG_MODBUS_ENABLE
+	#if CONFIG_MODBUS_SERIAL_ENABLE
 	setup_modbus_guard_once();
 	#endif
     // Inicia o console TCP (AP: 192.168.4.1:3333; em STA use o IP do roteador)

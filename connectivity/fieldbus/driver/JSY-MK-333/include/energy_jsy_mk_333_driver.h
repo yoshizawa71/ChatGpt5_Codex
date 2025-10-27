@@ -52,7 +52,11 @@ int jsy_mk333_probe(uint8_t addr, jsy_map_t *map, uint8_t *used_fc);
 /* Lê os valores principais (usa o mapa informado). Retorna 0 em sucesso. */
 int jsy_mk333_read_basic(uint8_t addr, const jsy_map_t *map, jsy_values_t *out);
 
-
-
+static inline int energy_rs485_probe(uint8_t addr, uint8_t *used_fc)
+{
+    jsy_map_t m = jsy_mk333_default_map();           /* usa seu mapa default */
+    int r = jsy_mk333_probe(addr, &m, used_fc);      /* 0 = sucesso no jsy_* */
+    return (r == 0) ? 1 : 0;                         /* 1=ok, 0=fail (igual XY) */
+}
 
 #endif /* CONNECTIVITY_FIELDBUS_DRIVER_JSY_MK_333_INCLUDE_ENERGY_JSY_MK_333_DRIVER_H_ */

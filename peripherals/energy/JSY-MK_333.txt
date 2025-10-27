@@ -1,0 +1,49 @@
+Calculo de potência
+
+
+Converter tensão para corrente usando o leitor 4 a 20ma com conversor 0-5V
+Vmax = 5V
+Vmin = 0V
+V é o valor recebido
+
+I[mA]=(((V-Vmin)/Vmax-Vmin)*16)+4
+
+P[w]= V[110]*I[mA]
+
+Kwh = (P[w] * T[horas])/1000
+
+
+Atributos sugeridos (todos Number, salvo onde indicado)
+Básico por fase
+
+i_a, i_b, i_c — Corrente por fase (A)
+
+v_a, v_b, v_c — Tensão por fase (V)
+
+p_a_w, p_b_w, p_c_w — Potência ativa por fase (W) (se o MK-333 expuser)
+
+q_a_var, q_b_var, q_c_var — Potência reativa por fase (var) (opcional)
+
+s_a_va, s_b_va, s_c_va — Potência aparente por fase (VA) (opcional)
+
+pf_a, pf_b, pf_c — Fator de potência por fase (0–1) (opcional)
+
+Totais e sistema
+
+p_total_w — Potência ativa total (W)
+
+q_total_var — Potência reativa total (var) (opcional)
+
+s_total_va — Potência aparente total (VA) (opcional)
+
+pf_total — Fator de potência total (0–1)
+
+freq_hz — Frequência (Hz)
+
+Energia (acumuladores)
+
+e_total_kwh — Energia ativa total importada (kWh) (normalmente o que mais usamos)
+
+e_export_kwh — Energia ativa exportada (kWh) (se o modelo suportar bidirecional)
+
+e_total_kvarh — Energia reativa total (kvarh) (opcional)

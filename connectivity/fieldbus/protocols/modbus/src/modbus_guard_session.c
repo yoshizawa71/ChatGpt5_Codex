@@ -4,9 +4,18 @@
  *  Created on: 17 de set. de 2025
  *      Author: geopo
  */
-#include "ifdef_features.h"
+ 
+ /*
+ 
+ Abre uma janelinha exclusiva (mutex + refcount) para fazer leituras rápidas, 
+ silencia logs durante a sessão (evita colisão com UART0), executa callbacks de 
+ preparo/flush/idle do RS-485 e pode inicializar/deinicializar o master a cada
+ sessão ou manter o master ligado (policy init_once).
+ 
+ */
+// #include "sdkconfig.h"
 #include "modbus_guard_session.h"
-#if CONFIG_MODBUS_ENABLE && CONFIG_MODBUS_GUARD_ENABLE
+#if CONFIG_MODBUS_SERIAL_ENABLE && CONFIG_MODBUS_GUARD_ENABLE
 
 
 #include <string.h>

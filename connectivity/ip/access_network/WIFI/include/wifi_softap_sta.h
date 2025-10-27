@@ -97,9 +97,15 @@ uint32_t wifi_ap_get_sta_count(void);
 bool     wifi_ap_is_suspended(void);        
 uint32_t wifi_ap_seconds_to_resume(void);  
 
-void wifi_diag_install(void);
-
 void     wifi_ap_single_shot_suspend(uint32_t seconds);
+
+bool wifi_is_sta_transitioning(void);
+//=================================
+//wifi_diag.c
+//=================================
+void wifi_diag_install(void);
+void wifi_diag_dump_now(const char *prefix);
+void wifi_diag_start_heartbeat(uint32_t period_ms);
 
 #ifdef __cplusplus
 }

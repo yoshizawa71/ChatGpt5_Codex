@@ -154,7 +154,7 @@ esp_err_t mount_sd_card(void) {
     }
     ESP_LOGI(TAG, "Filesystem mounted");
 
-    sdmmc_card_print_info(stdout, card);
+ //   sdmmc_card_print_info(stdout, card);
     
     check_if_file_exists(record_file);
     index_config_init();
@@ -399,31 +399,54 @@ esp_err_t save_record_sd_rs485(int channel, int subindex, const char *value_str)
     return save_record_sd_str(chan_str, value_str);
 }
 
-esp_err_t read_record_sd(uint32_t *cursor_pos, struct record_data_saved* record_data)
-{	
-	xSemaphoreTake(sdMutex,portMAX_DELAY);
-    FILE *f = fopen(record_file,"r");
-    
-    if(f == NULL)
-      {
-        ESP_LOGI(TAG, "FILE NULL %d", *cursor_pos);
-        xSemaphoreGive(sdMutex);
-        return ESP_FAIL;
-      }
+// "3"  -> 3
+// "3.1"-> 31 (o builder depois divide 31 -> Canal=3, Subcanal=1)
+static int channel_str_to_int(const char *ch) {
+    int base=0, sub=0;
+    if (!ch || !*ch) return 0;
+    if (sscanf(ch, "%d.%d", &base, &sub) == 2) return base*10 + sub;
+    if (sscanf(ch, "%d", &base) == 1)         return base;
+    return 0;
+}
 
-   if (*cursor_pos ==0)
-   {
-    fseeko(f, RECORD_FILE_HEADER_SIZE, SEEK_SET);
+
+esp_err_t read_record_sd(uint32_t *cursor_pos, struct record_data_saved* record_data)
+{
+    if (!cursor_pos || !record_data) return ESP_ERR_INVALID_ARG;
+
+    xSemaphoreTake(sdMutex, portMAX_DELAY);
+    FILE *f = fopen(record_file, "r");
+    if (!f) { xSemaphoreGive(sdMutex); return ESP_FAIL; }
+
+    if (*cursor_pos == 0) {
+        // Consome a primeira linha (cabeçalho "DATA | HORA | ..."), qualquer que seja o tamanho
+        char hdr[160];
+        (void)fgets(hdr, sizeof(hdr), f);
+    } else {
+        fseeko(f, *cursor_pos, SEEK_SET);
     }
-    
-    fseeko(f, *cursor_pos, SEEK_CUR);
-    fscanf(f," %s   %s     %1d       %s", record_data->date, record_data->time, &(record_data->channel), record_data->data);
+
+    char line[256];
+    if (!fgets(line, sizeof(line), f)) { fclose(f); xSemaphoreGive(sdMutex); return ESP_FAIL; }
 
     *cursor_pos = ftell(f);
     fclose(f);
     xSemaphoreGive(sdMutex);
+
+    // Quebra por "qualquer quantidade de espaços" (as colunas estão alinhadas com espaços)
+    char date[24], tim[16], chs[16], val[32];
+    int n = sscanf(line, " %23s %15s %15s %31s", date, tim, chs, val);
+    if (n != 4) return ESP_FAIL;
+
+    // Copia para a sua struct
+    snprintf(record_data->date, sizeof(record_data->date), "%s", date);
+    snprintf(record_data->time, sizeof(record_data->time), "%s", tim);
+    record_data->channel = channel_str_to_int(chs);          // "3.1" -> 31
+    snprintf(record_data->data, sizeof(record_data->data), "%s", val);
+
     return ESP_OK;
 }
+
 
 bool read_record_file_sd(uint32_t* byte_to_read, char* str)
 {

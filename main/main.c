@@ -1,3 +1,4 @@
+#include "main.h"
 #include <datalogger_control.h>
 #include "battery_monitor.h"
 #include "factory_control.h"
@@ -21,7 +22,7 @@
 #include "sdmmc_driver.h"
 #include "TCA6408A.h"
 #include "oled_display.h"
-#include "main.h"
+
 
 #include "sara_r422.h"
 //#include "modbus_rtu_master.h"
@@ -33,6 +34,7 @@
 #include "led_blink_control.h"
 
 #include "log_mux.h"
+
 
 #define ENABLE_OTA              0
 #define ENABLE_FACTORY_CONFIG   1
@@ -176,12 +178,15 @@ static void restore_power_pin_after_wakeup(void)
     gpio_num_t PWR_GPIO = GPIO_NUM_27;
 
     // 1) Desativa o hold para retomar controle pelo GPIO “normal”
-    rtc_gpio_hold_dis(PWR_GPIO);
+//    rtc_gpio_hold_dis(PWR_GPIO);
+    gpio_deep_sleep_hold_dis();
+    gpio_hold_dis(PWR_GPIO); 
 
     // 2) Configura como GPIO de saída (modo “normal”) e seta nível alto
     gpio_reset_pin(PWR_GPIO);
-    gpio_set_direction(PWR_GPIO, GPIO_MODE_OUTPUT);
+//    gpio_set_pull_mode(PWR_GPIO, GPIO_FLOATING);  // evita consumo por pull
     gpio_set_level(PWR_GPIO, 1);
+    gpio_set_direction(PWR_GPIO, GPIO_MODE_OUTPUT);
     
 }
 
@@ -213,32 +218,47 @@ static void release_rtc_holds(void) {
 
 void app_main(void)
 {
+//===================================================================
+//  Ligar as chaves mosfets
+//===================================================================
 //	set_cpu_freq_rtc(80); // Definir frequência para 80 MHz
+    cpu_freq_guard_t _g;
+    cpu_freq_guard_enter(&_g, 80);
+	ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
 	restore_power_pin_after_wakeup();
-//	vTaskDelay(pdMS_TO_TICKS(300));
 	release_rtc_holds();
-	wake_up_cause_t wkupcause = check_wakeup_cause();
 	ulp_system_stable = 1;
+//===================================================================
+//  Inicializa se o modbus estiver ativo
+//===================================================================
 	
-//	logmux_early_init(); Comentado temporariamente
-	esp_err_t ret;
-
-ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
+#if CONFIG_MODBUS_SERIAL_ENABLE
+  #if (CONFIG_RS485_UART_NUM == 0)
+    // RS-485 usa a UART0 → cale a UART0 desde o início
+    logmux_early_init();
+  #endif
+#endif
+//===================================================================
 	init_queue_notification();
-	// Inicializa o barramento I2C
 	
-	// Verifica o estado do barramento I2C antes de inicializar
+esp_err_t ret;
+
+//===================================================================
+// Verifica o estado do barramento I2C antes de inicializar
+// Inicializa o barramento I2C
+//===================================================================
     check_i2c_bus();
     ret = init_i2c_master();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao inicializar o I2C");
         return;
     }
-    
+//===================================================================  
+	wake_up_cause_t wkupcause = check_wakeup_cause();
     ESP_LOGI(TAG, "Boot cause = %d esp_reset reason = %d", wkupcause, esp_reset_reason());
-    ESP_LOGI(TAG, "VERSÃO OTA: %s", get_ota_version());
-    
-    // Inicializa o TCA6408A
+    vTaskDelay(pdMS_TO_TICKS(200));
+//===================================================================  
+// Inicializa o TCA6408A
     ret = init_tca6408a();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao inicializar o TCA6408A");
@@ -247,26 +267,25 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
     else{
 		 activate_mosfet(disable_analog_sensors);
 		}
-     
+
+//===================================================================      
     init_system();
     mount_driver();
-    server_comm_init(); // Inicializa o mutex recIndexMutex
-//    esp_task_wdt_init(30, true);
-    init_config_control();
-    
-    battery_monitor_init(false);
- //   calibrate_power_source(7.19f); // ajusta e salva se cololcar battery_monitor_init =true
-     
-    mount_sd_card();
 
+//    esp_task_wdt_init(30, true);
+//=================================================================== 
+// Precisa para inicializar os dados no front e tem que ser depois do mout driver
+    init_config_control();
+//=================================================================== 
+    mount_sd_card();
+    
      blink_init();
      
-  mqtt_publisher_init();   
+  
+  	// exemplo provisório (energia = 0, água = 1)
+//set_weg_payload_mode(0); // 1 = water
 
-/*
-    listFilesInDir();
-    littlefs_read_file_with_content("/littlefs/pressure_data_set.json");
-*/
+
 
 #if !CONFIG_ESP_TASK_WDT_INIT
     // If the TWDT was not initialized automatically on startup, manually intialize it now
@@ -279,14 +298,8 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
     printf("TWDT initialized\n");
 #endif // CONFIG_ESP_TASK_WDT_INIT
 
-    ESP_LOGI(TAG, "!!!RAM left %d", esp_get_free_heap_size());
+ //   ESP_LOGI(TAG, "!!!RAM left %d", esp_get_free_heap_size());
     
-    
-#if ENABLE_RS485
-    init_rs485_log_console();
-#endif
-
-
 #if ENABLE_RELAY == 1
     rele_init();
 
@@ -300,13 +313,12 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
     if(wkupcause == WAKE_UP_BOOT||wkupcause==WAKE_UP_INACTIVITY||wkupcause==WAKE_UP_NONE)
         {
             struct timeval last_time = { .tv_sec = get_last_sys_time() };
-            printf(">>>>>>>>>>>>>>Last TIME = %lld\n", last_time);
             settimeofday(&last_time, NULL);
         }
 
 //-----------------------------------------------------------------------------------------
     if(!has_factory_config())
-      {	//set_cpu_freq_rtc(160);
+      {	
         wifi_on=true;
         init_factory_task();
         first_factory_setup=true;
@@ -316,7 +328,6 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
             {
              case WAKE_UP_BOOT :
             	  printf("-->Wakeup Boot\n");
-            	 // set_cpu_freq_rtc(160);
             	  init_pulse_meter_task();
             	  init_timemanager_task();
             	  wifi_on=true;
@@ -326,6 +337,8 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
 
              case WAKE_UP_TIME :
             	  printf("-->Wakeup Time\n");
+                  cpu_freq_guard_t _g;
+                  cpu_freq_guard_enter(&_g, 160); 
             	  init_pulse_meter_task();
             	  init_timemanager_task();
 
@@ -333,7 +346,6 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
 
               case WAKE_UP_RING :
             	   printf("-->Wakeup Ring\n");
-            	 //  set_cpu_freq_rtc(160);
             	   init_pulse_meter_task();
             	   wifi_on=true;
             	   init_factory_task();
@@ -354,7 +366,6 @@ ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de 
  */               
               case WAKE_UP_EXTERN_SENSOR :
                	   printf("-->Wakeup EXTERN SENSOR\n");
-               	 //  set_cpu_freq_rtc(160);
                	   init_pulse_meter_task();
                	   wifi_on=true;
                	   init_factory_task();

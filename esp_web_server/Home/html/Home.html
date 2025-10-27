@@ -1,0 +1,73 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configurações </title>
+  <link href="/esp_web_server/Home/css/Home.css" rel="stylesheet">
+  <link href="/esp_web_server/common_css/Style.css" rel="stylesheet">
+</head>
+<body>
+
+  <h1><span id="company_label"></span> - Configurações</h1>
+  <h2>
+     <a href="/Home/html/Home.html">Home</a> |
+    <a href="/Device/html/ConfigDevice.html">Dispositivo</a> |
+    <a href="/Network/html/ConfigNetwork.html">Rede</a> |
+    <a href="/Operation/html/ConfigOperation.html">Operação</a> |
+    <a href="/Maintenance/html/Maintenance.html">Manutenção</a> |
+    <a href="/Register/html/RegisterView.html">Registros</a> |
+    <a href="/Exit/html/Exit.html" onclick="return confirm('Sair do Modo Confirmação?')">Sair</a>
+	
+  </h2>
+  <h3>
+  <table>
+    <tr>
+      <th colspan="2" class="msg">Bem-vindo à Interface Web</th>
+    </tr>
+    <tr>
+      <th>ID</th><td id="device"></td>
+    </tr>
+    <tr>
+      <th>Número de Série</th><td id="serial_number"></td>
+    </tr>
+    <tr>
+      <th>Nome</th><td id="name"></td>
+    </tr>
+    <tr>
+      <th>Usuário</th><td id="user"></td>
+    </tr>
+    <tr>
+      <th>APN</th><td id="apn"></td>
+    </tr>
+    <tr>
+      <th>Servidor</th><td id="data_server_url"></td>
+    </tr>
+    <tr>
+      <th>Frequência de Envio</th><td id="send_period"></td>
+    </tr>
+    <tr>
+      <th>Telefone</th><td id="phone"></td>
+    </tr>
+    <tr>
+      <th>CSQ</th><td id="csq"></td>
+    </tr>
+    <tr>
+      <th>Nível de Bateria</th><td id="battery"></td>
+    </tr>
+    
+    <tr>
+      <th>Última comunicação</th><td id="last_comm"></td>
+    </tr>
+    
+    <tr>
+      <th>Hora do Sistema</th><td><span id="systemTime"></span></td>
+      </tr>
+  </table>
+  </h3>
+  
+<script src="/common_jscripts/jquery-3.6.0.min.js"></script>
+<script src="/common_jscripts/connection_monitor.js"></script>
+<script src="/Home/jscripts/home.js"></script>
+
+</body>
+</html>

@@ -15,6 +15,7 @@
 
 #include <dirent.h>
 #include "system.h"
+#include "rs485_registry.h" 
 
 static const char *TAG = "Config_Driver";
 
@@ -37,8 +38,28 @@ static SemaphoreHandle_t file_mutex;
 
 #define RS485_MAP_PATH   "/littlefs/rs485_map.bin"
 
+#ifndef RS485_MAP_UI_PATH
+#define RS485_MAP_UI_PATH "/littlefs/rs485_map_ui.json"
+#endif
+
 #define CFG_MAX_JSON 4096
+
+#define RS485_HINTS_PATH "/littlefs/rs485_hints.bin"
+#define RS485_HINTS_MAX  248  /* 1..247 válidos */
+
+static rs485_hint_rec_t s_rs485_hints[RS485_HINTS_MAX];
+static bool s_rs485_hints_loaded = false;
+
 static char g_cfg_io_buf[CFG_MAX_JSON + 1];
+
+/* RS485 map binário do cadastro — usado para comparar “antes/depois”. */
+#ifndef RS485_MAP_PATH
+#define RS485_MAP_PATH   "/littlefs/rs485_map.bin"
+#endif
+
+/* Ping cache: backend pode exportar; se não exportar, usamos WEAK no linker. */
+__attribute__((weak)) void rs485_ping_cache_invalidate(uint8_t addr) { (void)addr; }
+
 
 bool has_device_config(void)
 {
@@ -129,26 +150,6 @@ bool has_record_pulse_config(void)
 
     return exists;
 }
-
-/*bool has_record_pressure_index_config(void)
-{
-    struct stat st;
-    if (stat(PRESSURE_INDEX_CONTROL, &st) == 0)
-    {
-        return true;
-    }
-    return false;
-}*/
-
-/*bool has_record_energy_index_config(void)
-{
-    struct stat st;
-    if (stat(ENERGY_INDEX_CONTROL, &st) == 0)
-    {
-        return true;
-    }
-    return false;
-}*/
 
 
 bool has_system_config(void)
@@ -1141,77 +1142,6 @@ void get_record_pulse_config(struct record_pulse_config *config)
 }
 
 
-//----------------------------------------------------------
-//           Energy
-//----------------------------------------------------------
-
-/*void save_energy_index_control(struct energy_index_control *config)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "last_write_energy_idx", config->last_write_energy_idx);
-    cJSON_AddNumberToObject(root, "last_read_energy_idx", config->last_read_energy_idx);
-    cJSON_AddNumberToObject(root, "total_counter", config->total_counter);
-
-    const char *energy_index = cJSON_PrintUnformatted(root);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    xSemaphoreTake(file_mutex,portMAX_DELAY);
-    FILE *f = fopen(ENERGY_INDEX_CONTROL, "w");
-    if (f != NULL)
-    {
-        fprintf(f, energy_index);
-        fclose(f);
-    }
-    else{
-    	 printf ("*** save_record_energy_config --> File = Null ***\n");
-    	 fclose(f);
-         }
-    free((void *)energy_index);
-    cJSON_Delete(root);
-    xSemaphoreGive(file_mutex);
-}*/
-
-/*void get_energy_index_control(struct energy_index_control *config)
-{
-    xSemaphoreTake(file_mutex,portMAX_DELAY);
-    FILE *f = fopen(ENERGY_INDEX_CONTROL, "r");
-
-    char buf[256];
-    if (f == NULL)
-     {
-      printf ("### get_record_energy_config --> File = Null\n");
-      xSemaphoreGive(file_mutex);
-      return;
-     
-     }
-    else
-      {
-    	vTaskDelay(pdMS_TO_TICKS(10));
-        fseek(f, 0L, SEEK_END);
-        long size = ftell(f);
-        rewind(f);
-      if(size>0)
-        {
-        fread(buf, 255, 1, f);
-        buf[size] = '\0';
-        fclose(f);
-        cJSON *root = cJSON_Parse(buf);
-        config->last_write_energy_idx = cJSON_GetObjectItem(root, "last_write_energy_idx")->valueint;
-        config->last_read_energy_idx = cJSON_GetObjectItem(root, "last_read_energy_idx")->valueint;
-        config->total_counter = cJSON_GetObjectItem(root, "total_counter")->valueint;
-        cJSON_Delete(root);
-       }
-       else
-          {
-           fclose(f);
-       	   printf ("### get_record_energy_config --> SIZE = %d ###\n",size);
-           vTaskDelay(pdMS_TO_TICKS(100));
-           }
-     }
-
-    xSemaphoreGive(file_mutex);
-}
-*/
-
 //---------------------------------------------------------
 
 void save_system_config(struct system_config *config)
@@ -1518,6 +1448,51 @@ if (f == NULL) {
     xSemaphoreGive(file_mutex);
     return ESP_OK;
 }
+//=======================================================
+//            RS485
+//=======================================================
+/* Carrega o mapa RS485 atual do disco (antes de sobrescrever), para comparar. */
+static int load_rs485_map_from_disk(sensor_map_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    int count = 0;
+    if (file_mutex) xSemaphoreTake(file_mutex, portMAX_DELAY);
+    FILE *fr = fopen(RS485_MAP_PATH, "rb");
+    if (fr) {
+        /* formato típico: [header opcional] + array sensor_map_t */
+        /* se você tem um cabeçalho próprio, ajuste aqui */
+        count = (int)fread(out, sizeof(sensor_map_t), (size_t)max, fr);
+        fclose(fr);
+    }
+    if (file_mutex) xSemaphoreGive(file_mutex);
+    if (count < 0) count = 0;
+    return count;
+}
+
+/* Após salvar o NOVO cadastro, limpa hints & ping dos endereços que saíram. */
+void config_rs485_on_registry_saved(const sensor_map_t *list, int count)
+{
+    sensor_map_t prev[RS485_MAX_SENSORS];
+    const int prev_n = load_rs485_map_from_disk(prev, RS485_MAX_SENSORS);
+    if (prev_n <= 0) return;  // nada para comparar
+
+    /* marca presentes no novo cadastro por addr */
+    bool present[RS485_HINTS_MAX] = {0};
+    for (int i = 0; i < count;++i) {
+        uint8_t a = list[i].address;
+        if (a > 0 && a < RS485_HINTS_MAX) present[a] = true;
+    }
+    /* tudo que existia antes e não está mais presente → limpar */
+    for (int i = 0; i < prev_n; ++i) {
+        uint8_t a = prev[i].address;
+        if (a > 0 && a < RS485_HINTS_MAX && !present[a]) {
+            ESP_LOGI(TAG, "RS485 addr=%u removido do cadastro → limpando hints & ping", a);
+            (void)config_rs485_hint_clear(a);
+            rs485_ping_cache_invalidate(a);  // WEAK: só faz algo se o backend exportar
+        }
+    }
+}
+
 
 esp_err_t save_rs485_config(const sensor_map_t *map, size_t count) {
     if (count > RS485_MAX_SENSORS) {
@@ -1584,6 +1559,209 @@ esp_err_t load_rs485_config(sensor_map_t *map, size_t *count) {
     ESP_LOGI(TAG, "RS-485 config carregado (%u sensores)", (unsigned)*count);
     return ESP_OK;
 }
+
+/* ---------- RS485 Hints centralizados aqui ------------------------ */
+
+
+static void rs485_hints_init_defaults(void) {
+    memset(s_rs485_hints, 0, sizeof(s_rs485_hints));
+    for (int i = 0; i < RS485_HINTS_MAX; ++i) s_rs485_hints[i].addr = (uint8_t)i;
+}
+
+esp_err_t config_rs485_hints_load(rs485_hint_rec_t *tbl, size_t tbl_len)
+{
+    if (!tbl || tbl_len < RS485_HINTS_MAX) return ESP_ERR_INVALID_ARG;
+    if (file_mutex) xSemaphoreTake(file_mutex, portMAX_DELAY);
+    int fd = open(RS485_HINTS_PATH, O_RDONLY);
+    if (fd < 0) {
+        memset(tbl, 0, sizeof(rs485_hint_rec_t) * tbl_len);
+        for (size_t i = 0; i < tbl_len; ++i) tbl[i].addr = (uint8_t)i;
+        if (file_mutex) xSemaphoreGive(file_mutex);
+        return ESP_OK;
+    }
+    ssize_t need = (ssize_t)(sizeof(rs485_hint_rec_t) * tbl_len);
+    ssize_t rd   = read(fd, tbl, need);
+    close(fd);
+    if (file_mutex) xSemaphoreGive(file_mutex);
+    if (rd != need) {
+        memset(tbl, 0, sizeof(rs485_hint_rec_t) * tbl_len);
+        for (size_t i = 0; i < tbl_len; ++i) tbl[i].addr = (uint8_t)i;
+    }
+    return ESP_OK;
+}
+
+esp_err_t config_rs485_hints_save(const rs485_hint_rec_t *tbl, size_t tbl_len)
+{
+    if (!tbl || tbl_len < RS485_HINTS_MAX) return ESP_ERR_INVALID_ARG;
+    if (file_mutex) xSemaphoreTake(file_mutex, portMAX_DELAY);
+    int fd = open(RS485_HINTS_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { if (file_mutex) xSemaphoreGive(file_mutex); return ESP_FAIL; }
+    ssize_t need = (ssize_t)(sizeof(rs485_hint_rec_t) * tbl_len);
+    ssize_t wr   = write(fd, tbl, need);
+    close(fd);
+    if (file_mutex) xSemaphoreGive(file_mutex);
+    return (wr == need) ? ESP_OK : ESP_FAIL;
+}
+
+/* lazy-load do cache interno */
+static void rs485_hints_ensure_loaded(void) {
+    if (!s_rs485_hints_loaded) {
+        rs485_hints_init_defaults();
+        (void) config_rs485_hints_load(s_rs485_hints, RS485_HINTS_MAX);
+        s_rs485_hints_loaded = true;
+    }
+}
+
+bool config_rs485_hint_get(uint8_t addr, rs485_hint_rec_t *out)
+{
+    if (!addr || addr >= RS485_HINTS_MAX || !out) return false;
+    rs485_hints_ensure_loaded();
+    *out = s_rs485_hints[addr];
+    return true;
+}
+
+esp_err_t config_rs485_hint_set(uint8_t addr, const rs485_hint_rec_t *in)
+{
+    if (!addr || addr >= RS485_HINTS_MAX || !in) return ESP_ERR_INVALID_ARG;
+    rs485_hints_ensure_loaded();
+    s_rs485_hints[addr] = *in;
+    s_rs485_hints[addr].addr = addr;
+    return config_rs485_hints_save(s_rs485_hints, RS485_HINTS_MAX);
+}
+
+esp_err_t config_rs485_hint_clear(uint8_t addr)
+{
+    if (!addr || addr >= RS485_HINTS_MAX) return ESP_ERR_INVALID_ARG;
+    rs485_hints_ensure_loaded();
+    rs485_hint_rec_t z = {0};
+    z.addr = addr;
+    s_rs485_hints[addr] = z;
+    return config_rs485_hints_save(s_rs485_hints, RS485_HINTS_MAX);
+}
+
+void config_rs485_hint_note_success(uint8_t addr, uint8_t used_fc,
+                                    uint32_t baud, uint8_t parity, uint8_t stopbits)
+{
+    if (!addr || addr >= RS485_HINTS_MAX) return;
+    rs485_hints_ensure_loaded();
+    rs485_hint_rec_t h = s_rs485_hints[addr];
+    h.addr     = addr;
+    if (used_fc) h.used_fc = used_fc;
+    if (baud)    h.baud    = baud;
+    h.parity   = parity;
+    h.stopbits = stopbits;
+    h.fail_count = 0;
+    s_rs485_hints[addr] = h;
+    (void) config_rs485_hints_save(s_rs485_hints, RS485_HINTS_MAX);
+}
+
+void config_rs485_hint_note_failure(uint8_t addr)
+{
+    if (!addr || addr >= RS485_HINTS_MAX) return;
+    rs485_hints_ensure_loaded();
+    if (s_rs485_hints[addr].fail_count < 250) s_rs485_hints[addr].fail_count++;
+    (void) config_rs485_hints_save(s_rs485_hints, RS485_HINTS_MAX);
+}
+
+// ======================================================================
+// RS485 UI Hints (used_fc) — persistidos em /littlefs/rs485_map_ui.json
+// ======================================================================
+
+// Retorna ESP_OK e *out_fc=0x03/0x04 se encontrado; ESP_ERR_NOT_FOUND se ausente.
+esp_err_t rs485_hint_get_used_fc(uint8_t addr, uint8_t *out_fc)
+{
+    if (!out_fc) return ESP_ERR_INVALID_ARG;
+    *out_fc = 0;
+    if (xSemaphoreTake(file_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    FILE *fr = fopen(RS485_MAP_UI_PATH, "rb");
+    if (!fr) { xSemaphoreGive(file_mutex); return ESP_ERR_NOT_FOUND; }
+    fseek(fr, 0, SEEK_END);
+    long sz = ftell(fr);
+    rewind(fr);
+    char *buf = (sz > 0) ? (char*)malloc((size_t)sz + 1) : NULL;
+    if (!buf) { fclose(fr); xSemaphoreGive(file_mutex); return ESP_ERR_NO_MEM; }
+    fread(buf, 1, (size_t)sz, fr);
+    fclose(fr);
+    xSemaphoreGive(file_mutex);
+    buf[sz] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) return ESP_ERR_INVALID_STATE;
+
+    // Aceita { "sensors":[...] } ou um array direto [...]
+    cJSON *arr = cJSON_GetObjectItem(root, "sensors");
+    if (!cJSON_IsArray(arr)) arr = root;
+    for (cJSON *it = arr ? arr->child : NULL; it; it = it->next) {
+        cJSON *a  = cJSON_GetObjectItem(it, "address");
+        cJSON *fc = cJSON_GetObjectItem(it, "used_fc");
+        if (cJSON_IsNumber(a) && (int)a->valuedouble == (int)addr && cJSON_IsNumber(fc)) {
+            *out_fc = (uint8_t)fc->valuedouble;
+            cJSON_Delete(root);
+            return ESP_OK;
+        }
+    }
+    cJSON_Delete(root);
+    return ESP_ERR_NOT_FOUND;
+}
+
+// Atualiza/adiciona used_fc para um address
+esp_err_t rs485_hint_set_used_fc(uint8_t addr, uint8_t used_fc)
+{
+    if (xSemaphoreTake(file_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    // Carrega arquivo (se existir)
+    FILE *fr = fopen(RS485_MAP_UI_PATH, "rb");
+    char *buf = NULL;
+    if (fr) {
+        fseek(fr, 0, SEEK_END);
+        long sz = ftell(fr);
+        rewind(fr);
+        if (sz > 0) {
+            buf = (char*)malloc((size_t)sz + 1);
+            if (buf) {
+                fread(buf, 1, (size_t)sz, fr);
+                buf[sz] = '\0';
+            }
+        }
+        fclose(fr);
+    }
+    cJSON *root = buf ? cJSON_Parse(buf) : NULL;
+    if (!root) root = cJSON_CreateArray(); // fallback para array puro
+    free(buf);
+
+    cJSON *arr = root;
+    bool found = false;
+    for (cJSON *it = arr->child; it; it = it->next) {
+        cJSON *a = cJSON_GetObjectItem(it, "address");
+        if (cJSON_IsNumber(a) && (int)a->valuedouble == (int)addr) {
+            cJSON *fc = cJSON_GetObjectItem(it, "used_fc");
+            if (cJSON_IsNumber(fc)) fc->valuedouble = used_fc;
+            else cJSON_AddNumberToObject(it, "used_fc", used_fc);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        cJSON *it = cJSON_CreateObject();
+        cJSON_AddNumberToObject(it, "address", addr);
+        cJSON_AddNumberToObject(it, "used_fc", used_fc);
+        cJSON_AddItemToArray(arr, it);
+    }
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) { xSemaphoreGive(file_mutex); return ESP_ERR_NO_MEM; }
+    FILE *fw = fopen(RS485_MAP_UI_PATH, "wb");
+    if (!fw) { free(out); xSemaphoreGive(file_mutex); return ESP_FAIL; }
+    fwrite(out, 1, strlen(out), fw);
+    fclose(fw);
+    free(out);
+    xSemaphoreGive(file_mutex);
+    return ESP_OK;
+}
+
 
 void save_pressure_data(struct pressure_data *config)
 {
@@ -1666,91 +1844,7 @@ void get_pressure_data(struct pressure_data *config)
     xSemaphoreGive(file_mutex);
 }
 
-//----------------------------------------------------------------
-/*
-void save_energy_measured(struct energy_measured *config)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "V1", config->V1);
-    cJSON_AddNumberToObject(root, "V2", config->V2);
-    cJSON_AddStringToObject(root, "last_power_1", config->last_power_1);
-    cJSON_AddStringToObject(root, "last_power_2", config->last_power_2);
- 
-    char *energy_measured = cJSON_PrintUnformatted(root);
-    
-    if (xSemaphoreTake(file_mutex, portMAX_DELAY) == pdTRUE) {
-    FILE *f = fopen(ENERGY_MEASURED, "w");
-    if (f != NULL)
-    {
-//      fputs(energy_measured, f);
-         if (fputs(energy_measured, f) == EOF) {
-                printf("*** save_energy_measured --> Error writing to file: %s ***\n", strerror(errno));
-                fclose(f);
-                xSemaphoreGive(file_mutex);
-                free(energy_measured);
-                cJSON_Delete(root);
-                return;
-            }
-      fclose(f);
-    }
-    else{
-    	 printf ("*** Energy Measured --> File = Null ***\n");
-         }
-       xSemaphoreGive(file_mutex);   
-     }
-    free((void *) energy_measured);
-    cJSON_Delete(root);   
-}
 
-void get_energy_measured(struct energy_measured *config)
-{
-    xSemaphoreTake(file_mutex,portMAX_DELAY);
-    FILE *f = fopen(ENERGY_MEASURED, "r");
-    
- if (f == NULL)
-   {
-    printf ("### energy measured --> File = Null ###\n");
-    xSemaphoreGive(file_mutex);
-    return;
-    }
-	    vTaskDelay(pdMS_TO_TICKS(10));
-        fseek(f, 0L, SEEK_END);
-        long size = ftell(f);
-        rewind(f);
-        
-        if (size <= 0) {
-        // Arquivo vazio ou erro de tamanho
-        fclose(f);
-        printf("### get_energy_measured --> SIZE = %ld ###\n", size);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        xSemaphoreGive(file_mutex);
-        return;
-        }
-		char buf[256];
-        size_t bytes_read = fread(buf, 1, (size_t) (size < (long)sizeof(buf) - 1 ? size : (long)sizeof(buf) - 1), f);
-        buf[bytes_read] = '\0';
-    // Fecha o arquivo agora que a leitura foi concluída
-        fclose(f);
-        
-            // Parse do JSON
-        cJSON *root = cJSON_Parse(buf);
-        if (root == NULL) {
-        printf("### get_energy_measured --> JSON Parse Error ###\n");
-        xSemaphoreGive(file_mutex);
-        return;
-        }
-        cJSON *item;
-        config->V1 = cJSON_GetObjectItem(root, "V1")->valuedouble;
-        config->V2 = cJSON_GetObjectItem(root, "V2")->valuedouble;
-
-        strcpy(config->last_power_1, cJSON_GetObjectItem(root, "last_power_1")->valuestring);
-        strcpy(config->last_power_2, cJSON_GetObjectItem(root, "last_power_2")->valuestring);
-     
-        cJSON_Delete(root);
-
-        xSemaphoreGive(file_mutex);
-}
-*/
 
 //----------------------------------------------------------------
 //	Verificação de dados do arquifo Little FS

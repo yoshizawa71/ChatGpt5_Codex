@@ -1,4 +1,4 @@
-#include "ifdef_features.h"
+#include "sdkconfig.h"
 #include "energy_meter.h"
 #include <stdio.h>
 #include <string.h>
@@ -6,9 +6,19 @@
 #include "esp_log.h"
 #include "modbus_rtu_master.h"
 #include "modbus_guard_session.h"
+#include "datalogger_driver.h"
+
+// Contexto usado no iterate
+typedef struct {
+    esp_err_t last;
+    int saved;
+} iter_ctx_t;
 
 
 extern int rs485_registry_adapter_link_anchor;
+/*esp_err_t rs485_hint_get_used_fc(uint8_t addr, uint8_t *out_fc);
+esp_err_t rs485_hint_set_used_fc(uint8_t addr, uint8_t used_fc);*/
+
 static inline void _force_link_rs485_registry_adapter(void) {
     (void)rs485_registry_adapter_link_anchor;
 }
@@ -78,33 +88,51 @@ esp_err_t energy_meter_read_currents(uint8_t addr, float outI[3])
 {
     if (!outI) return ESP_ERR_INVALID_ARG;
 
-    #if !CONFIG_MODBUS_ENABLE
+    #if !CONFIG_MODBUS_SERIAL_ENABLE
     // Quando Modbus estiver desativado (kill-switch), falhe explicitamente:
     return ESP_ERR_NOT_SUPPORTED;
 #endif
     
-    uint16_t raw[3] = {0};
+
+     uint16_t raw[3] = {0};
     esp_err_t err = ESP_OK;
+
+    // [NEW] Lê hint persistido para decidir a ordem de tentativa
+    uint8_t hinted_fc = 0;
+    (void)rs485_hint_get_used_fc(addr, &hinted_fc); // OK se não existir ainda
 
     // Janela curta e exclusiva para a transação Modbus
     MB_SESSION_WITH(pdMS_TO_TICKS(500)) {
-        // 1ª tentativa: FC03 (Holding)
-        err = read_currents_fc03(addr, raw);
-        if (err == ESP_ERR_TIMEOUT) {
-            vTaskDelay(pdMS_TO_TICKS(150));               // retry curto
-            err = read_currents_fc03(addr, raw);
-        }
-        // Fallback: FC04 (Input) se FC03 falhar
-        if (err != ESP_OK) {
-            esp_err_t e2 = read_currents_fc04(addr, raw);
-            if (e2 == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(150));           // retry curto
-                e2 = read_currents_fc04(addr, raw);
+        esp_err_t e1 = ESP_FAIL, e2 = ESP_FAIL;
+        if (hinted_fc == 0x03) {
+            e1 = read_currents_fc03(addr, raw);
+            if (e1 != ESP_OK) e2 = read_currents_fc04(addr, raw);
+            err = (e1 == ESP_OK) ? e1 : e2;
+            if (e1 != ESP_OK && e2 == ESP_OK) {
+                // Atualiza hint: agora 0x04 funcionou
+                rs485_hint_set_used_fc(addr, 0x04);
             }
-            err = e2;
+        } else if (hinted_fc == 0x04) {
+            e1 = read_currents_fc04(addr, raw);
+            if (e1 != ESP_OK) e2 = read_currents_fc03(addr, raw);
+            err = (e1 == ESP_OK) ? e1 : e2;
+            if (e1 != ESP_OK && e2 == ESP_OK) {
+                // Atualiza hint: agora 0x03 funcionou
+                rs485_hint_set_used_fc(addr, 0x03);
+            }
+        } else {
+            // Sem hint: tenta 0x03 -> 0x04 e grava o que funcionou
+            e1 = read_currents_fc03(addr, raw);
+            if (e1 != ESP_OK) e2 = read_currents_fc04(addr, raw);
+            err = (e1 == ESP_OK) ? e1 : e2;
+            if (e1 == ESP_OK) {
+                rs485_hint_set_used_fc(addr, 0x03);
+            } else if (e2 == ESP_OK) {
+                rs485_hint_set_used_fc(addr, 0x04);
+            }
         }
     } // sessão fecha aqui, garantindo flush+idle
-
+    
     if (err == ESP_ERR_TIMEOUT) {
         ESP_LOGW(TAG, "sem resposta do escravo addr=%u (timeout)", addr);
         return err;
@@ -168,7 +196,7 @@ esp_err_t energy_meter_save_currents_by_channel(uint8_t channel)
 }
 
 /* Opcional: salvar de todos os cadastrados */
-typedef struct { esp_err_t last; int saved; } iter_ctx_t;
+
 static bool iter_cb(uint8_t channel, uint8_t addr, void *user)
 {
 	ESP_LOGI("ENERGY", "[iter] ch=%u addr=%u (vou salvar)", channel, addr);

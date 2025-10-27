@@ -1,5 +1,6 @@
 set(srcs "src/wifi_softap_sta.c"
          "src/wifi_diag.c"
+         "src/wifi_link.c"
       )
 
 idf_component_register(SRCS "${srcs}"

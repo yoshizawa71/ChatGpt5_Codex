@@ -3,6 +3,7 @@
 // George: marquei as adições com [NEW]; mantive seus nomes/estilo para “colar e compilar”.
 
 #include "wifi_softap_sta.h"
+#include "sdkconfig.h"
 
 #include "datalogger_control.h"
 #include "datalogger_driver.h"
@@ -10,6 +11,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,7 +29,15 @@
 #include "lwip/sys.h"
 
 #include "time_sync_sntp.h"   // <— novo include
+#include "system.h"
 
+
+
+static volatile uint8_t s_sta_transitioning = 0;
+
+static inline void sta_set_transitioning(bool v) {
+    __atomic_store_n(&s_sta_transitioning, v ? 1u : 0u, __ATOMIC_RELEASE);
+}
 
 // Contador de estações associadas ao SoftAP
 static volatile uint32_t s_sta_count = 0;
@@ -40,7 +51,8 @@ __attribute__((weak)) uint32_t wifi_ap_seconds_to_resume(void) { return 0; }
 uint32_t wifi_ap_get_sta_count(void) { return s_sta_count; }
 
 /* Ajuste aqui o fuso (ou troque por valor vindo do NVS) */
-#define TIME_SYNC_TZ_DEFAULT         "UTC-3"
+//#define TIME_SYNC_TZ_DEFAULT         "UTC-3"
+#define TIME_SYNC_TZ_DEFAULT "<-03>3"   // BRT: UTC-3, sem DST
 /* Re-sincronizar a cada 6h (ajuste a gosto) */
 #define TIME_SYNC_RESYNC_INTERVAL_S  (6 * 3600)
 
@@ -149,30 +161,6 @@ static void ip_evt_logger(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
-// Chame isso ao final do seu init de Wi-Fi (depois de esp_wifi_init()).
-void wifi_diag_logger_init(void)
-{
-    // registra TODOS os WIFI_EVENT
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                        &wifi_evt_logger, NULL, &s_wifi_any_id);
-    // (opcional) IP_EVENT STA_GOT_IP
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                        &ip_evt_logger, NULL, &s_ip_got_id);
-}
-
-// (opcional) desregistrar no deinit
-void wifi_diag_logger_deinit(void)
-{
-    if (s_wifi_any_id) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id);
-        s_wifi_any_id = NULL;
-    }
-    if (s_ip_got_id) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_got_id);
-        s_ip_got_id = NULL;
-    }
-}
-
 // ================== Utils ==================
 static inline uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
     if (v < lo) return lo;
@@ -184,6 +172,7 @@ static inline bool ap_suspend_window_open(void) {   // [NEW]
     if (!s_ap_suspended_flag) return false;
     return (esp_timer_get_time() < (int64_t)s_ap_suspend_until_us);
 }
+
 
 // ================== (Opcional) Provisioning fallback ==================
 #if USE_IDF_PROVISIONING_FALLBACK
@@ -272,13 +261,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG_AP, "SoftAP iniciado");
             ap_active = true;
               //Agenda uma tarefa pós-start (200–300 ms depois).
-            xTaskCreate(ap_post_start_task, "ap_post_start", 3072, NULL, 4, NULL);
+            
+                xTaskCreate(ap_post_start_task, "ap_post_start", 3072, NULL, 4, NULL);
+                
               break;
 
         case WIFI_EVENT_AP_STOP: {
             ESP_LOGI(TAG_AP, "SoftAP parado (AP_STOP)");
             ap_active = false;
-
               break;
         }
 
@@ -294,6 +284,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
         case WIFI_EVENT_STA_START: {
             ESP_LOGI(TAG_STA, "STA start");
+            sta_set_transitioning(true);
 
             if (!has_activate_sta()) break;
 
@@ -312,6 +303,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
                 ESP_LOGI(TAG_STA, "Conectando STA ao SSID: %s", ssid);
                 esp_wifi_connect();
+                
+          
             } else {
                 ESP_LOGW(TAG_STA, "SSID/senha STA não definidos — não conectando");
             }
@@ -320,6 +313,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
         case WIFI_EVENT_STA_CONNECTED:
             ESP_LOGI(TAG_STA, "STA associado");
+            sta_set_transitioning(true);
             s_sta_connected = true;
             s_retry_num = 0;
             s_sta_intentional_disconnect = false;
@@ -328,6 +322,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             break;
 
         case WIFI_EVENT_STA_DISCONNECTED: {
+//			atomic_store(&s_sta_transitioning, false);
             wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t*)event_data;
             ESP_LOGW(TAG_STA, "STA desconectado, motivo=%d", d ? d->reason : -1);
             s_sta_connected = false;
@@ -348,6 +343,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 xTimerStart(s_sta_reconn_timer, 0);
             }
             s_retry_num++;
+            sta_set_transitioning(true);
 
 #if USE_IDF_PROVISIONING_FALLBACK
             if (s_retry_num == 10) { // exemplo: após várias falhas, abre provisioning
@@ -370,6 +366,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             s_retry_num = 0;
             s_sta_intentional_disconnect = false;
             if (s_sta_reconn_timer) xTimerStop(s_sta_reconn_timer, 0);
+            sta_set_transitioning(false);  // **fim da transição**
             if (!s_time_sync_inflight) {
             s_time_sync_inflight = true;
             xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 4, NULL);
@@ -381,6 +378,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         case IP_EVENT_STA_LOST_IP:    // [NEW] trate perda de IP como gatilho de reconexão
             ESP_LOGW(TAG_STA, "IP do STA perdido — agendando reconexão");
             s_sta_connected = false;
+            sta_set_transitioning(true);
             if (s_sta_reconn_timer) {
                 xTimerChangePeriod(s_sta_reconn_timer, pdMS_TO_TICKS(RECONNECT_BACKOFF_BASE_MS), 0);
                 xTimerStart(s_sta_reconn_timer, 0);
@@ -440,6 +438,67 @@ static void sta_kick_timer_cb(TimerHandle_t xTimer) {
     if (s_sta_worker_task) xTaskNotifyGive(s_sta_worker_task);
 }
 
+static inline void apply_tz_brt_once(void){
+    static bool s_done = false;
+    if (!s_done) {
+        setenv("TZ", "<-03>3", 1);  // BRT fixo
+        tzset();
+        s_done = true;
+    }
+}
+
+static void time_sync_task(void *arg){
+    // garanta TZ antes de qualquer uso de mktime/localtime
+    apply_tz_brt_once();
+
+    time_sync_set_timezone(TIME_SYNC_TZ_DEFAULT);   // pode manter, não atrapalha
+
+    esp_err_t e = time_sync_sntp_now(8000);
+    ESP_LOGI("TIME_SYNC", "SNTP: %s", (e==ESP_OK) ? "OK" : esp_err_to_name(e));
+
+    // Debug opcional
+    time_t now = time(NULL);
+    ESP_LOGI("TIME_SYNC", "Local now: %s", asctime(localtime(&now)));
+
+    s_time_sync_inflight = false;
+    vTaskDelete(NULL);
+}
+static void time_resync_timer_cb(TimerHandle_t xTimer){
+    if (s_sta_connected && !s_time_sync_inflight) {
+        s_time_sync_inflight = true;
+        xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 4, NULL);
+    }
+}
+
+//========================================================================
+bool wifi_is_sta_transitioning(void) {
+    return __atomic_load_n(&s_sta_transitioning, __ATOMIC_ACQUIRE) != 0;
+}
+
+// Chame isso ao final do seu init de Wi-Fi (depois de esp_wifi_init()).
+void wifi_diag_logger_init(void)
+{
+    // registra TODOS os WIFI_EVENT
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                        &wifi_evt_logger, NULL, &s_wifi_any_id);
+    // (opcional) IP_EVENT STA_GOT_IP
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        &ip_evt_logger, NULL, &s_ip_got_id);
+}
+
+// (opcional) desregistrar no deinit
+void wifi_diag_logger_deinit(void)
+{
+    if (s_wifi_any_id) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_any_id);
+        s_wifi_any_id = NULL;
+    }
+    if (s_ip_got_id) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_got_id);
+        s_ip_got_id = NULL;
+    }
+}
+
 // ================== API ==================
 esp_err_t start_wifi_ap_sta(void)
 {
@@ -474,7 +533,6 @@ esp_err_t start_wifi_ap_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     
     wifi_diag_logger_init();
-    wifi_diag_install();
 
     s_wifi_event_group = xEventGroupCreate();
 
@@ -709,16 +767,3 @@ void wifi_sta_mark_intentional_disconnect(bool enable)
     s_sta_intentional_disconnect = enable;
 }
 
-static void time_sync_task(void *arg){
-    time_sync_set_timezone(TIME_SYNC_TZ_DEFAULT);
-    esp_err_t e = time_sync_sntp_now(8000); // até 8s de espera
-    ESP_LOGI("TIME_SYNC", "SNTP: %s", (e==ESP_OK) ? "OK" : esp_err_to_name(e));
-    s_time_sync_inflight = false;
-    vTaskDelete(NULL);
-}
-static void time_resync_timer_cb(TimerHandle_t xTimer){
-    if (s_sta_connected && !s_time_sync_inflight) {
-        s_time_sync_inflight = true;
-        xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 4, NULL);
-    }
-}

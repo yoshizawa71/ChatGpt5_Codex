@@ -3,6 +3,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "esp_event.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -10,7 +11,7 @@
 #include "esp_crt_bundle.h"
 #endif
 
-// Se quiser que, ao cair de TLS->TCP, a porta 8883 seja trocada para 1883 automaticamente, mantenha 1.
+// Mantido por compatibilidade (não usamos fallback automático de porta aqui)
 #ifndef MQTT_WIFI_FALLBACK_PORT1883
 #define MQTT_WIFI_FALLBACK_PORT1883 1
 #endif
@@ -35,24 +36,32 @@ static void _mqtt_event(void *arg, esp_event_base_t base, int32_t event_id, void
     case MQTT_EVENT_CONNECTED:
         ctx->connected = true;
         xSemaphoreGive(ctx->ev_connected);
-        ESP_LOGI(TAG, "CONNECTED to broker");
+        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
         break;
 
     case MQTT_EVENT_DISCONNECTED:
         ctx->connected = false;
-        ESP_LOGW(TAG, "DISCONNECTED from broker");
+        ESP_LOGW(TAG, "MQTT_EVENT_DISCONNECTED");
         break;
 
     case MQTT_EVENT_PUBLISHED:
         if (e && e->msg_id == ctx->last_msg_id) {
             xSemaphoreGive(ctx->ev_puback);
         }
-        ESP_LOGI(TAG, "PUBLISHED msg_id=%d", e ? e->msg_id : -1);
+        ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED msg_id=%d", e ? e->msg_id : -1);
         break;
 
-    case MQTT_EVENT_ERROR:
-        ESP_LOGW(TAG, "MQTT_EVENT_ERROR");
+    case MQTT_EVENT_ERROR: {
+        int rc = -1, tls_last = 0, tls_cert = 0;
+        if (e && e->error_handle) {
+            rc       = e->error_handle->connect_return_code;        // 5 => Not authorized
+            tls_last = e->error_handle->esp_tls_last_esp_err;       // erro TLS baixo nível
+            tls_cert = e->error_handle->esp_tls_cert_verify_flags;  // flags verificação X.509
+        }
+        ESP_LOGW(TAG, "MQTT_EVENT_ERROR rc=%d tls_last=0x%x cert_flags=0x%x",
+                 rc, tls_last, tls_cert);
         break;
+    }
 
     default:
         break;
@@ -61,7 +70,7 @@ static void _mqtt_event(void *arg, esp_event_base_t base, int32_t event_id, void
 
 // -------------------- CONTEXTO --------------------
 static mqtt_esp_ctx_t* _ctx_new(void) {
-    mqtt_esp_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    mqtt_esp_ctx_t *ctx = (mqtt_esp_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
 
     ctx->ev_mutex     = xSemaphoreCreateMutex();
@@ -69,9 +78,9 @@ static mqtt_esp_ctx_t* _ctx_new(void) {
     ctx->ev_puback    = xSemaphoreCreateBinary();
 
     if (!ctx->ev_mutex || !ctx->ev_connected || !ctx->ev_puback) {
-        if (ctx->ev_mutex) vSemaphoreDelete(ctx->ev_mutex);
+        if (ctx->ev_mutex)     vSemaphoreDelete(ctx->ev_mutex);
         if (ctx->ev_connected) vSemaphoreDelete(ctx->ev_connected);
-        if (ctx->ev_puback) vSemaphoreDelete(ctx->ev_puback);
+        if (ctx->ev_puback)    vSemaphoreDelete(ctx->ev_puback);
         free(ctx);
         return NULL;
     }
@@ -85,85 +94,76 @@ static void _ctx_free(mqtt_esp_ctx_t *ctx) {
         esp_mqtt_client_destroy(ctx->client);
         ctx->client = NULL;
     }
-    if (ctx->ev_mutex) vSemaphoreDelete(ctx->ev_mutex);
+    if (ctx->ev_mutex)     vSemaphoreDelete(ctx->ev_mutex);
     if (ctx->ev_connected) vSemaphoreDelete(ctx->ev_connected);
-    if (ctx->ev_puback) vSemaphoreDelete(ctx->ev_puback);
+    if (ctx->ev_puback)    vSemaphoreDelete(ctx->ev_puback);
     free(ctx);
 }
 
 // -------------------- API --------------------
-mqtt_esp_handle_t mqtt_client_esp_create_and_connect(const mqtt_conn_cfg_t *cfg, int timeout_ms) {
-    if (!cfg || !cfg->host || cfg->port <= 0) {
-        ESP_LOGE(TAG, "Config inválida (host/port).");
-        return NULL;
-    }
+// Cria o cliente e conecta (retorna handle do contexto em sucesso)
+mqtt_esp_handle_t mqtt_client_esp_create_and_connect(const mqtt_conn_cfg_t *cfg, int timeout_ms)
+{
+    if (!cfg || !cfg->host || !cfg->host[0]) return NULL;
 
     mqtt_esp_ctx_t *ctx = _ctx_new();
     if (!ctx) return NULL;
 
-    esp_mqtt_client_config_t mc = {
-        .broker.address.hostname = cfg->host,
-        .broker.address.port     = cfg->port,
-        .credentials.client_id   = (cfg->client_id && cfg->client_id[0]) ? cfg->client_id : "esp32",
-        .credentials.username    = (cfg->username && cfg->username[0]) ? cfg->username : NULL,
-        .credentials.authentication.password = (cfg->password) ? cfg->password : NULL,
-        .session.keepalive       = (cfg->keepalive > 0) ? cfg->keepalive : 60,
-        .session.disable_clean_session = cfg->clean_session ? false : true,
-        .network.disable_auto_reconnect = false,
-    };
+    esp_mqtt_client_config_t mc = {0};
 
-    // ---- TLS: decide se ficará efetivamente ativo ----
-    bool tls_effective = cfg->use_tls;
+    // Endereço & credenciais
+    mc.broker.address.hostname  = cfg->host;
+    mc.broker.address.port      = cfg->port;
+    mc.credentials.client_id    = (cfg->client_id && cfg->client_id[0]) ? cfg->client_id : NULL;
+    mc.credentials.username     = cfg->username;
+    mc.credentials.authentication.password = cfg->password;
 
-    if (tls_effective) {
+    // Transporte: TCP (1883) ou SSL (8883)
+    mc.broker.address.transport = cfg->use_tls ? MQTT_TRANSPORT_OVER_SSL
+                                               : MQTT_TRANSPORT_OVER_TCP;
+
+    // TLS (apenas quando SSL)
+    if (cfg->use_tls) {
         if (cfg->ca_cert_pem && cfg->ca_cert_pem[0]) {
+            // CA específica fornecida pelo front/config (opcional)
             mc.broker.verification.certificate = cfg->ca_cert_pem;
         }
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-        else {
-            // Usa bundle de CAs públicas embutido no IDF
-            mc.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
-        }
-#else
-        else {
-            ESP_LOGW(TAG, "TLS solicitado sem CA/BUNDLE. Forçando TCP (sem TLS).");
-            tls_effective = false;
-        }
-#endif
+        // Se certificate == NULL e o bundle estiver habilitado no projeto,
+        // o esp-tls usará o bundle automaticamente.
     }
 
-    // *** IMPORTANTE: Definir transporte explicitamente quando usamos hostname/port ***
-    mc.broker.address.transport = tls_effective ? MQTT_TRANSPORT_OVER_SSL
-                                                : MQTT_TRANSPORT_OVER_TCP;
+    // Session (API nova do IDF 5.x)
+    mc.session.keepalive              = cfg->keepalive;
+    mc.session.disable_clean_session  = !cfg->clean_session;  // invertido
 
-#if MQTT_WIFI_FALLBACK_PORT1883
-    if (!tls_effective && mc.broker.address.port == 8883) {
-        ESP_LOGW(TAG, "Porta 8883 sem TLS: alternando para 1883.");
-        mc.broker.address.port = 1883;
-    }
-#endif
+    // Network/session extras
+    mc.network.disable_auto_reconnect = false;
 
+    // Inicializa cliente
     ctx->client = esp_mqtt_client_init(&mc);
     if (!ctx->client) {
         _ctx_free(ctx);
         return NULL;
     }
 
-    esp_mqtt_client_register_event(ctx->client, MQTT_EVENT_ANY, _mqtt_event, ctx);
+    // Registra handler com o CONTEXTO (não o client)
+    esp_mqtt_client_register_event(ctx->client, ESP_EVENT_ANY_ID, _mqtt_event, ctx);
 
-    if (esp_mqtt_client_start(ctx->client) != ESP_OK) {
+    // Start e aguarda CONNECTED (via semáforo)
+    esp_err_t err = esp_mqtt_client_start(ctx->client);
+    if (err != ESP_OK) {
         _ctx_free(ctx);
         return NULL;
     }
 
     if (timeout_ms <= 0) timeout_ms = 10000;
-    // Espera pelo CONNECTED (sinalizado no handler)
     if (xSemaphoreTake(ctx->ev_connected, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         ESP_LOGE(TAG, "Timeout esperando CONNECTED");
         _ctx_free(ctx);
         return NULL;
     }
 
+    ESP_LOGI(TAG, "CONNECTED to broker");
     return (mqtt_esp_handle_t)ctx;
 }
 

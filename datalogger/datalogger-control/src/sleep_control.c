@@ -68,7 +68,6 @@ wake_up_cause_t check_wakeup_cause(void)
    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     uint16_t ulp_gpio_extern_sensor_from_ulp = (ulp_gpio_extern_sensor & UINT16_MAX);
     esp_reset_reason_t       rst   = esp_reset_reason();
-    printf("Sleep Wakeup Cause = %d, Reset Reason = %d\n", cause, rst);
     
    if(cause==ESP_SLEEP_WAKEUP_TIMER)
      {
@@ -358,7 +357,7 @@ void start_deep_sleep(void)
     
 	init_ulp_program();
     init_sleep_gpio();
-    gpio_set_pins_high_impedance();
+//    gpio_set_pins_high_impedance();
     
   // Sincronizar IO26 e inicializar antes de iniciar o ULP
     uint32_t io26_state = rtc_gpio_get_level(GPIO_NUM_26);
@@ -379,14 +378,19 @@ void start_deep_sleep(void)
 //------------------------------------------------------------------
 
     ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup());// IO26 com debounce
-    printf("ULP running, IO26 initial state: %ld\n", ulp_ext_sensor_status);
-    printf("IO26 state before sleep: %d\n", rtc_gpio_get_level(GPIO_NUM_26));
+//    printf("ULP running, IO26 initial state: %ld\n", ulp_ext_sensor_status);
+//    printf("IO26 state before sleep: %d\n", rtc_gpio_get_level(GPIO_NUM_26));
     printf("Debounce counter: %ld\n", ulp_io26_debounce_counter);
 	printf("!!!>>> TIME : %s <<<!!!\n", get_time());
 	printf("Entering deep sleep\n\n");
 	
-	sleep_prepare(/*maybe_stop_wifi=*/true);
-	vTaskDelay(pdMS_TO_TICKS(100));
+//	sleep_prepare(/*maybe_stop_wifi=*/true);
+	vTaskDelay(pdMS_TO_TICKS(10));
+	 gpio_set_pins_high_impedance();
+	 
+	 fflush(stdout);
+     vTaskDelay(pdMS_TO_TICKS(10));
+	
     esp_deep_sleep_start();
 }
 

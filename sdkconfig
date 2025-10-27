@@ -388,11 +388,46 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
-# Data Logger Configuration
+# Smart IoT Platform — Recursos
 #
-# CONFIG_MODEM_DEVICE_SIM800 is not set
-CONFIG_MODEM_DEVICE_SARA_G450=y
-# end of Data Logger Configuration
+# CONFIG_SARA_R422_ENABLE is not set
+# CONFIG_DISPLAY_ENABLE is not set
+
+#
+# RS-485
+#
+CONFIG_RS485_UART_NUM=2
+CONFIG_RS485_TX_PIN=17
+CONFIG_RS485_RX_PIN=16
+CONFIG_RS485_DE_RE_PIN=18
+# end of RS-485
+
+#
+# Buses e Fieldbus
+#
+CONFIG_MODBUS_BUILD_ENABLE=y
+CONFIG_MODBUS_BACKEND_SERIAL_RTU=y
+# CONFIG_MODBUS_BACKEND_TCP is not set
+CONFIG_MODBUS_SERIAL_ENABLE=y
+CONFIG_MODBUS_GUARD_ENABLE=y
+# end of Buses e Fieldbus
+
+#
+# Serviços remotos
+#
+# CONFIG_REMOTE_MDNS is not set
+# end of Serviços remotos
+
+#
+# Energia & Debug
+#
+# CONFIG_FC_TRACE_INTERACTION is not set
+# end of Energia & Debug
+
+#
+# Dica: habilite SARA_R422_ENABLE se for usar LTE/NB-IoT
+#
+# end of Smart IoT Platform — Recursos
 
 #
 # SSD1306 Configuration
@@ -1464,7 +1499,7 @@ CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y
 # CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC is not set
 # CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC is not set
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
 # CONFIG_MBEDTLS_DEBUG is not set

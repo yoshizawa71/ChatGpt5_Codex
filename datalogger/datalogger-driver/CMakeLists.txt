@@ -2,7 +2,6 @@ set(src_driver
                "src/ads1015_reader.c"
                "src/config_driver.c"               
                "src/pcnt.c"
-               "src/rs485.c"
                "src/sdcard_mmc.c"
                "src/server_comm.c"
                "src/TCA6408A.c"

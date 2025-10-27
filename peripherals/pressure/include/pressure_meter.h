@@ -13,16 +13,8 @@
 #include <stdint.h>
 
 struct pressure_data {
-//	float       vmin1;
-//	float       vmin2;
-//	float       fcorr1;
-//	float       fcorr2;
     char       pressure1[8];
     char       pressure2[8];
-//    bool       cali_fcorr1;
-//    bool       cali_fcorr2;
-//    bool       no_pressure1;
-//    bool       no_pressure2;
 };
 
 /*struct pressure_index_control {
@@ -48,9 +40,6 @@ void save_default_pressure_index_control(void);
 bool has_record_pressure_index_config(void);
 
 bool has_pressure_data_set(void);
-
-void save_pressure_index_control(struct pressure_index_control *config);
-void get_pressure_index_control(struct pressure_index_control *config);
 
 //------------------------------------------------------------------
 //                        Pressure Sensor

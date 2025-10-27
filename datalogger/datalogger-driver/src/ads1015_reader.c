@@ -250,8 +250,8 @@ float oneshot_analog_read(sensor_t tipo) {
         get_raw = ads1015_get_raw(&s_adc);
         voltage = apply_moving_average(ads1015_get_voltage(&s_adc),
                                        raw_buffer_ch1, &buffer_idx_ch1, &buffer_count_ch1);
-        printf("###### Analog 1 #####\n");
-        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+       ESP_LOGI(TAG,"###### Analog 1 #####\n");
+        ESP_LOGI(TAG,"Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
         break;
 
       case analog_2:
@@ -259,28 +259,28 @@ float oneshot_analog_read(sensor_t tipo) {
         get_raw = ads1015_get_raw(&s_adc);
         voltage = apply_moving_average(ads1015_get_voltage(&s_adc),
                                        raw_buffer_ch2, &buffer_idx_ch2, &buffer_count_ch2);
-        printf("###### Analog 2 #####\n");
-        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        ESP_LOGI(TAG,"###### Analog 2 #####\n");
+        ESP_LOGI(TAG,"Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
         break;
 
       case fonte:
         ads1015_set_mux(&s_adc, ADS1015_MUX_1_GND);
         get_raw = ads1015_get_raw(&s_adc);
         voltage = ads1015_get_voltage(&s_adc);
-        printf("###### Analog 3 #####\n");
-        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        ESP_LOGI(TAG,"###### Analog 3 #####\n");
+        ESP_LOGI(TAG,"Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
         break;
 
       case bateria:
         ads1015_set_mux(&s_adc, ADS1015_MUX_0_GND);
         get_raw = ads1015_get_raw(&s_adc);
         voltage = ads1015_get_voltage(&s_adc);
-        printf("###### Analog 4 #####\n");
-        printf("Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
+        ESP_LOGI(TAG,"###### Analog 4 #####\n");
+        ESP_LOGI(TAG,"Raw ADC value: %d voltage: %.04f volts\n", get_raw, voltage);
         break;
 
       default:
-        printf("Sensor inexistente!\n");
+        ESP_LOGI(TAG,"Sensor inexistente!\n");
         voltage = 0.0f;
         break;
     }

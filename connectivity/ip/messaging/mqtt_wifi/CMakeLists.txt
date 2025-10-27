@@ -2,7 +2,6 @@ idf_component_register(
     SRCS
         "src/mqtt_tcp.c"
         "src/mqtt_client_esp.c"
-        "src/mqtt_payload_builder.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

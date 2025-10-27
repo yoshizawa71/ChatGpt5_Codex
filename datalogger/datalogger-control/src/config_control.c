@@ -31,6 +31,8 @@ static void save_default_self_monitoring_data(void);
 
 static void save_default_pressure_data(void);
 
+static uint8_t g_weg_payload_mode = 0; // 0=energy (padrão), 1=water
+
 static SemaphoreHandle_t myMutex;
 
 void de_init_config_control(void)
@@ -261,7 +263,7 @@ static void save_default_network_config(void)
     net_config.user_en = false;
     net_config.token_en = false;
     net_config.pw_en = false;
-    net_config.mqtt_en = true;
+    net_config.mqtt_en = false;
     strcpy(net_config.mqtt_url, "cogneti.ddns.net");
     net_config.mqtt_port = 9999;
     strcpy(net_config.mqtt_topic, "/topic/qos1");
@@ -1219,3 +1221,18 @@ bool check_enable_led(void)
 
     return ret;
 }
+
+// ===== WEG payload mode =====
+// 0 = energia ; 1 = água
+uint8_t get_weg_payload_mode(void)
+{
+    return g_weg_payload_mode;
+}
+
+void set_weg_payload_mode(uint8_t mode)
+{
+    g_weg_payload_mode = (mode ? 1 : 0);
+    // se você já tem esquema de persistência em NVS para outros campos,
+    // salve aqui (ex.: nvs_set_u8(...,"weg_mode", g_weg_payload_mode))
+}
+

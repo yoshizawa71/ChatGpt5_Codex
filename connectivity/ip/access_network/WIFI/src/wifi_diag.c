@@ -16,6 +16,9 @@
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
 #include "esp_heap_caps.h"
+#include <inttypes.h>
+#include "driver/gpio.h"
+
 
 static const char *TAG = "WIFI/DIAG";
 
@@ -29,6 +32,8 @@ static const char *TAG = "WIFI/DIAG";
 
 static TaskHandle_t s_heartbeat = NULL;
 static bool s_ap_running = false;
+
+static volatile uint32_t s_hb_period_ms = HB_PERIOD_MS; // padrão do arquivo
 
 static inline uint64_t ms_since_boot(void){
     return (uint64_t)(esp_timer_get_time() / 1000ULL);
@@ -121,8 +126,7 @@ static void ip_event_logger(void *arg, esp_event_base_t base, int32_t id, void *
 static void heartbeat_task(void *arg)
 {
 #if CONFIG_ESP_TASK_WDT_INIT
-    // Registra no Task Watchdog para detectar travamentos
-    esp_task_wdt_add(NULL);
+    esp_task_wdt_add(NULL);               // registre se quiser vigiar essa task
 #endif
 
 #if DIAG_LED_GPIO >= 0
@@ -134,21 +138,19 @@ static void heartbeat_task(void *arg)
     gpio_config(&io);
 #endif
 
- uint32_t elapsed = 0;
+    const uint32_t tick_ms = HB_TICK_MS;  // p.ex. 1000
+    uint32_t elapsed = 0;
+
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(HB_TICK_MS));
+        vTaskDelay(pdMS_TO_TICKS(tick_ms));
 
-        // reset no WDT com frequência menor que o timeout (5s)
 #if CONFIG_ESP_TASK_WDT_INIT
-        esp_task_wdt_reset();
+        esp_task_wdt_reset();             // alimenta o WDT sempre antes do período
 #endif
+        elapsed += tick_ms;
 
-        elapsed += HB_TICK_MS;
-        if (elapsed >= HB_PERIOD_MS) {
+        if (elapsed >= s_hb_period_ms) {
             log_wifi_summary("HEARTBEAT");
-#if DIAG_LED_GPIO >= 0
-            // pisca aqui também se quiser
-#endif
             elapsed = 0;
         }
     }
@@ -157,15 +159,34 @@ static void heartbeat_task(void *arg)
 // Chame isto depois do esp_wifi_init() e antes/depois de startar o Wi-Fi.
 void wifi_diag_install(void)
 {
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                        &wifi_event_logger, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
-                                                        &ip_event_logger,   NULL, NULL));
-    if (!s_heartbeat) {
-        xTaskCreatePinnedToCore(heartbeat_task, "wifi_diag_hb", 3072, NULL, 3, &s_heartbeat, tskNO_AFFINITY);
-    }
-    ESP_LOGI(TAG, "Wi-Fi diag instalado");
+    // Handlers leves de evento (WIFI/IP)
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_logger, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT,   ESP_EVENT_ANY_ID, &ip_event_logger,   NULL, NULL));
+
+    ESP_LOGI(TAG, "Wi-Fi diag instalado (sem heartbeat automático)");
 }
 
+void wifi_diag_dump_now(const char *prefix)
+{
+    log_wifi_summary(prefix);  // imprime modo, AP/SSID/canal, assoc, heap, uptime
+}
+
+void wifi_diag_start_heartbeat(uint32_t period_ms)
+{
+    if (s_heartbeat) return;                      // já está rodando
+    if (period_ms >= 1000) s_hb_period_ms = period_ms;
+    xTaskCreatePinnedToCore(heartbeat_task, "wifi_diag_hb",
+                            3072, NULL, 3, &s_heartbeat, tskNO_AFFINITY);
+}
+
+void wifi_diag_stop_heartbeat(void)
+{
+    if (s_heartbeat) {
+        vTaskDelete(s_heartbeat);
+        s_heartbeat = NULL;
+    }
+}
 
 

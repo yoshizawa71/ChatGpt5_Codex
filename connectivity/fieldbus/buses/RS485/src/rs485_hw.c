@@ -76,3 +76,31 @@ esp_err_t rs485_hw_rx(uint8_t *data, size_t max_len, size_t *out_len, TickType_t
     if (out_len) *out_len = (size_t)r;
     return ESP_OK;
 }
+
+esp_err_t rs485_hw_init_default(void)
+{
+    rs485_hw_cfg_t cfg;
+    rs485_hw_fill_defaults(&cfg);
+    return rs485_hw_init(&cfg);
+}
+
+void rs485_hw_fill_defaults(rs485_hw_cfg_t *cfg)
+{
+    if (!cfg) return;
+    *cfg = (rs485_hw_cfg_t) {
+        .uart_num     = RS485_UART_NUM,
+        .tx_gpio      = RS485_TX_PIN,
+        .rx_gpio      = RS485_RX_PIN,
+        .de_re_gpio   = RS485_DE_RE_PIN,
+        .baudrate     = 9600,
+        .data_bits    = 8,
+        .stop_bits    = 1,
+        .parity       = 0,    // none
+        .rx_timeout_ms = 50,
+    };
+}
+
+int rs485_hw_get_uart_num(void)
+{
+    return s_cfg.uart_num; // 's_cfg' já guarda a cfg aplicada pelo init
+}

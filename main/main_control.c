@@ -12,6 +12,7 @@
 #include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "http_publisher.h"
 #include "main.h"
 #include "reboot_test.h"
 #include "time.h"
@@ -19,7 +20,6 @@
 #include <datalogger_control.h>
 #include "sara_r422.h"
 #include "tcp_log_server.h"
-//#include "comm_wifi.h"
 #include "datalogger_driver.h"
 
 #include"pulse_meter.h"
@@ -37,9 +37,14 @@
 
 #include "tcp_log_server.h"  
 #include "mqtt_publisher.h"
+#include "wifi_link.h"
 #include "wifi_softap_sta.h"
 #include "esp_netif.h"
 #include <lwip/netdb.h>
+#include "portal_state.h"
+#include "sdkconfig.h"
+#include "payload_time.h"
+#include "rs485_central.h"
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 
@@ -83,6 +88,7 @@ bool Receive_FactoryControl_Task_ON = false;
 bool Receive_Get_Network_Time_Task_ON = false;
 bool Send_Response_Factory_Control=false;
 static bool console_tcp_start = false;
+
 //----------------------------------------
 
 void TimeManager_Task(void* pvParameters);
@@ -94,32 +100,59 @@ static uint8_t save_sensor_data(void);
 //static void update_system_time(void);
 
 // ====== VALIDAÇÃO FIXA (desligue depois) ======
-#define ENERGY_VALIDATE_FIXED   1
+#define ENERGY_VALIDATE_FIXED   0
 #define ENERGY_FIX_CHANNEL      3
 #define ENERGY_FIX_ADDRESS      1
 // ==============================================
-
-/*void init_sensor_pwr_supply(void)
-{
-
-	    activate_mosfet(0);
-
-}*/
-//------------------------------------
-//Função somente de teste
-static void force_ap_down_task(void *arg)
-{
-    vTaskDelay(pdMS_TO_TICKS(30000));  // aguarda 5 s
-    ESP_LOGW("TEST", "Auto-test: forçando queda do SoftAP (modo STA-only)");
-    ap_active = false;
-    // só troca o modo, sem parar o driver nem derrubar o HTTP server
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    vTaskDelete(NULL);
+// ---- Gancho fraco: estado do portal/factory (será sobreposto por portal_state.c se presente)
+__attribute__((weak)) bool factory_portal_active(void) {
+    return false; // fallback: assume headless
 }
 
+// ---- Fallback fraco de bring-up STA (será sobreposto por wifi_link.c se presente)
+__attribute__((weak)) esp_err_t wifi_link_ensure_ready_sta(int timeout_ms, bool force_sta_only)
+{
+    // Reaproveita seus utilitários existentes
+    wifi_mode_t m = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&m);
+
+    if (m != WIFI_MODE_STA && m != WIFI_MODE_APSTA) {
+        esp_err_t err = esp_event_loop_create_default();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+
+        err = esp_netif_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+
+        if (start_wifi_ap_sta() != ESP_OK) {
+            ESP_LOGW("WiFi Fallback", "Falha ao iniciar WiFi.");
+            return ESP_FAIL;
+        }
+    }
+
+    if (force_sta_only) {
+        wifi_ap_force_disable(); // garante STA-only no modo headless
+    }
+
+    // Espera GOT_IP até timeout_ms
+    TickType_t t0 = xTaskGetTickCount();
+    esp_netif_ip_info_t ip;
+    while (true) {
+        memset(&ip, 0, sizeof(ip));
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+            ESP_LOGI("WiFi Fallback", "GOT_IP: %s", ip4addr_ntoa((const ip4_addr_t*)&ip.ip));
+            return ESP_OK;
+        }
+        if ((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(timeout_ms)) {
+            ESP_LOGW("WiFi Fallback", "Timeout aguardando GOT_IP.");
+            return ESP_ERR_TIMEOUT;
+        }
+//        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+
 //------------------------------------
-
-
 
 // Opcional: se você tem um httpd rodando, registra GET /logs para visualizar
 // o ring buffer de logs no navegador (http://<ip>/logs)
@@ -155,7 +188,6 @@ static int load_last_processed_minute(void)
     return minute;
 }
 
-
 static bool has_passed_midnight(void)
 {
     time_t now;
@@ -177,7 +209,7 @@ static bool has_passed_midnight(void)
 
 static uint8_t save_sensor_data(void)
 {
-printf("+++++>>> Vai Gravar dados <<<+++++\n");
+//printf("+++++>>> Vai Gravar dados <<<+++++\n");
 activate_mosfet(enable_analog_sensors);
 bool pressure_sensor_1 = false;
 bool pressure_sensor_2 = false;
@@ -234,24 +266,16 @@ uint8_t result = SAVE_OK;
 // ---------------------------------------------------------------------
 static void save_sensor_data_rs485(void)
 {
-#if ENERGY_VALIDATE_FIXED
-    ESP_LOGI("RS485", "VALIDAÇÃO: ler CH=%d ADDR=%d (fixo)", ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
-    esp_err_t e = energy_meter_save_currents(ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
+    // Leitura centralizada de TODOS os sensores cadastrados (qualquer tipo).
+    // Tempo orçado curto? ajuste o timeout_ms (ex.: 400~600 ms total).
+    esp_err_t e = rs485_central_poll_and_save(600);
     if (e == ESP_OK) {
-        ESP_LOGI("RS485", "VALIDAÇÃO: gravação OK (3.1/3.2/3.3)");
-    } else {
-        ESP_LOGW("RS485", "VALIDAÇÃO: falha ao gravar (fixo): %s", esp_err_to_name(e));
-    }
-#else
-    esp_err_t e = energy_meter_save_registered_currents();
-    if (e == ESP_OK) {
-        ESP_LOGI("RS485", "Energy: dados salvos a partir do cadastro.");
+        ESP_LOGI("RS485", "Central: dados salvos a partir do cadastro.");
     } else if (e == ESP_ERR_NOT_FOUND) {
-        ESP_LOGW("RS485", "Nenhum medidor RS485 cadastrado.");
+        ESP_LOGW("RS485", "Nenhum sensor RS485 cadastrado/legível.");
     } else {
-        ESP_LOGW("RS485", "Falha ao salvar energia: %s", esp_err_to_name(e));
+        ESP_LOGW("RS485", "Central: falha ao salvar: %s", esp_err_to_name(e));
     }
-#endif
 }
 
 
@@ -305,6 +329,11 @@ static void wifi_send_data_to_server(void)
     }
     s_last_send_ticks = now;
 
+    // ---------- BOOST (160 MHz) ----------
+    cpu_freq_guard_t _g;
+    cpu_freq_guard_enter(&_g, 160);
+    // (por decisão sua, NÃO chamaremos cpu_freq_guard_exit(&_g);)
+
     // Levanta “rede ativa” para bloquear deep-sleep durante o envio
     Receive_NetConnect_Task_ON = true;
     if (xQueue_NetConnect) {
@@ -312,67 +341,51 @@ static void wifi_send_data_to_server(void)
         xQueueSend(xQueue_NetConnect, &v, 0);
     }
 
-    // ----------------- Liga Wi-Fi (headless: STA-only) -----------------
-    wifi_mode_t m = WIFI_MODE_NULL;
-    esp_wifi_get_mode(&m);
-
-    if (m != WIFI_MODE_STA && m != WIFI_MODE_APSTA) {
-        // em alguns boots, o loop/netif já existem: trate INVALID_STATE como OK
-        esp_err_t err = esp_event_loop_create_default();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto done;
-
-        err = esp_netif_init();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto done;
-
-        if (start_wifi_ap_sta() != ESP_OK) {
-            ESP_LOGW(TAG, "Falha ao iniciar WiFi.");
-            goto done;
-        }
-        wifi_ap_force_disable(); // garante STA-only no modo headless
-    }
-
-    // ----------------- Espera por GOT_IP (até 20 s) -----------------
-    esp_netif_ip_info_t ip;
-    TickType_t t0 = xTaskGetTickCount();
-    while (true) {
-        memset(&ip, 0, sizeof(ip));
-        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
-            ESP_LOGI(TAG, "GOT_IP: %s", ip4addr_ntoa((const ip4_addr_t*)&ip.ip));
-            break;
-        }
-        if ((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(20000)) {
-            ESP_LOGW(TAG, "Timeout aguardando GOT_IP; abortando envio.");
-            goto done;
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
-    }
-
-    // ----------------- Pré-resolve DNS do broker (até ~5 s) -----------------
-    const char *host = get_mqtt_url(); // seu getter do host
-    if (!host || !host[0]) {
-        ESP_LOGE(TAG, "Host MQTT vazio; abortando.");
+    // ----------------- Garante Wi-Fi pronto (STA) -----------------
+    // Se o portal/factory estiver ativo, mantemos AP+STA; se headless, forçamos STA-only.
+    bool sta_only = !factory_portal_active();
+    if (wifi_link_ensure_ready_sta(20000 /*ms*/, sta_only) != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi não ficou pronto; abortando envio.");
         goto done;
     }
-    bool resolved = false;
-    for (int i = 0; i < 10; ++i) { // 10 * 500 ms
-        struct addrinfo *ai = NULL;
-        if (getaddrinfo(host, NULL, NULL, &ai) == 0 && ai) {
-            freeaddrinfo(ai);
-            resolved = true;
-            break;
+
+    // ----------------- (Opcional) Pré-resolve DNS do destino -----------------
+    // Mantemos seu pré-resolve apenas para MQTT; HTTP resolve dentro do esp_http_client.
+    if (has_network_mqtt_enabled()) {
+        const char *host = get_mqtt_url();
+        if (!host || !host[0]) {
+            ESP_LOGE(TAG, "Host MQTT vazio; abortando.");
+            goto done;
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-    if (!resolved) {
-        ESP_LOGW(TAG, "DNS não respondeu para '%s'; abortando envio.", host);
-        goto done;
+        bool resolved = false;
+        for (int i = 0; i < 10; ++i) { // 10 * 500 ms ~ 5 s
+            struct addrinfo *ai = NULL;
+            if (getaddrinfo(host, NULL, NULL, &ai) == 0 && ai) {
+                freeaddrinfo(ai);
+                resolved = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (!resolved) {
+            ESP_LOGW(TAG, "DNS não respondeu para '%s'; abortando envio.", host);
+            goto done;
+        }
     }
 
     // ----------------- Publica (1x) -----------------
-    mqtt_wifi_publish_now();  // internamente atualiza índices se sucesso
+    // Prioriza MQTT se ambos estiverem habilitados (mantenho sua política típica).
+    if (has_network_mqtt_enabled()) {
+        mqtt_wifi_publish_now();   // internamente atualiza índices se sucesso
+    } else if (has_network_http_enabled()) {
+        http_wifi_publish_now();   // idem
+    } else {
+        ESP_LOGW(TAG, "Nenhum protocolo de aplicação habilitado (MQTT/HTTP).");
+    }
 
 done:
+    // NÃO baixamos a CPU aqui (você decidiu manter em 160MHz até o deep sleep)
+
     // Baixa “rede ativa”
     Receive_NetConnect_Task_ON = false;
     if (xQueue_NetConnect) {
@@ -385,8 +398,6 @@ done:
     s_send_in_progress = false;
     portEXIT_CRITICAL(&s_send_mux);
 }
-
-
 
 
 void init_queue_notification(void)
@@ -439,9 +450,8 @@ void init_queue_notification(void)
 //  Gerencia o Datalogger
 //------------------------------------------------
 void TimeManager_Task(void* pvParameters)
-{ 
+{     
  blink_set_profile(BLINK_PROFILE_DEVICE_RUNNING);
- battery_monitor_update();
 // Inicializa o NVS 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -465,8 +475,9 @@ uint8_t counter=0;
 
  if ((ulp_inactivity & UINT16_MAX) == 1)
 	 {
-		// activate_mosfet(enable_sara);
+		 //activate_mosfet(enable_sara);
 		// cell_get_local_time();
+		Receive_FactoryControl_Task_ON=false;
 	 }
 	 
 //Somente para teste
@@ -482,7 +493,8 @@ uint8_t counter=0;
 //=====================================	 
 
 while(1)
-{
+{	
+	vTaskDelay(pdMS_TO_TICKS(1000));
 /*float vbat = battery_monitor_get_voltage();          // bateria em volts
 float vsource = get_power_source_volts();            // fonte em volts
 uint16_t batt_pct = get_battery();                  // % da bateria (0..100)
@@ -491,7 +503,7 @@ float soc = battery_monitor_get_soc();               // 0..1
 ESP_LOGI(TAG, "Bateria: %.2fV (%u%%, soc=%.2f), Fonte: %.2fV",
          vbat, (unsigned)batt_pct, soc, vsource);*/
        
-	vTaskDelay(pdMS_TO_TICKS(1000));
+	
 	
 /*	printf("AP Active = %d e modbus start = %d\n", ap_active, console_tcp_start);
 	if (ap_active && !console_tcp_start)
@@ -532,16 +544,20 @@ if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load
 	
     ESP_LOGI("Save Sensor Data", "TESTE: vou chamar save_sensor_data()");
     
+ //===============================
+//  Leitores do sensor interno
+//-------------------------------   
 	uint8_t save_ret = save_sensor_data();
 	if (save_ret != SAVE_OK) {
     ESP_LOGW(TAG, "save_sensor_data falhou com máscara 0x%02x", save_ret);
 }
 
-/*log_reset_reason_on_boot();
-test_trigger_reboot(REBOOT_PANIC, 10000);*/
-
-//ESP_LOGI("ENERGY", "TESTE: vou chamar energy_meter_save_registered_currents()");
+//===============================
+//  Leitores dos sensores RS485 externos
+//-------------------------------
+#if CONFIG_MODBUS_SERIAL_ENABLE
 save_sensor_data_rs485(); 
+#endif
 	
   if(has_measurement_to_send())
 	 {
@@ -578,10 +594,10 @@ xQueueReceive(xQueue_Factory_Control, &Receive_FactoryControl_Task_ON , (TickTyp
 /*
 printf("Factory task on = %d ####  NetConnect = %d #### Receive_Get_Network_Time =%d \n ",
        Receive_FactoryControl_Task_ON, Receive_NetConnect_Task_ON,Receive_Get_Network_Time_Task_ON);
- */      
+*/       
 if (!Receive_FactoryControl_Task_ON && !Receive_NetConnect_Task_ON &&!Receive_Get_Network_Time_Task_ON)
    {
-	vTaskDelay(pdMS_TO_TICKS(500));
+	vTaskDelay(pdMS_TO_TICKS(10));
 //	 turn_off_sara();
  	start_deep_sleep();
  	}

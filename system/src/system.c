@@ -1,3 +1,4 @@
+#include "system.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -5,12 +6,27 @@
 #include "esp_pm.h"
 #include "soc/rtc.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+
+extern void set_cpu_freq_rtc(int mhz);
 
 static void init_nvs(void);
 static void dumpAllTaskStackUsage();
 // Definição de TAG para mensagens de log
 static const char* TAG = "SYSTEM";
+
+static portMUX_TYPE s_cpu_boost_mux = portMUX_INITIALIZER_UNLOCKED;
+static int s_req160 = 0;
+static int s_req240 = 0;
+static int s_base_mhz = 80;          // seu default de boot
+static int s_curr_mhz = 80;
+
+static inline int max(int a, int b) { return a > b ? a : b; }
+
+/*typedef struct {
+    int prev_mhz;
+} cpu_freq_guard_t;*/
 
 static void init_nvs(void) {
     esp_err_t err = nvs_flash_init();
@@ -45,6 +61,41 @@ static void dumpAllTaskStackUsage() {
     printf("===============================================\n");
 
     vPortFree(pxTaskStatusArray);
+}
+
+int cpu_read_current_mhz_rtc(void) {
+    rtc_cpu_freq_config_t cfg;
+    rtc_clk_cpu_freq_get_config(&cfg);
+    return (int)cfg.freq_mhz;
+}
+
+void cpu_freq_guard_enter(cpu_freq_guard_t *g, int target_mhz) {
+    if (!g) return;
+    g->prev_mhz = cpu_read_current_mhz_rtc();
+    if (g->prev_mhz != target_mhz) {
+        set_cpu_freq_rtc(target_mhz);
+    }
+}
+
+void cpu_freq_guard_exit(cpu_freq_guard_t *g) {
+    if (!g) return;
+    if (g->prev_mhz > 0) {
+        set_cpu_freq_rtc(g->prev_mhz);
+    }
+}
+
+static void cpu_apply_locked(void)
+{
+    int target = s_base_mhz;
+    if (s_req240 > 0)      target = 240;
+    else if (s_req160 > 0) target = 160;
+
+    if (target != s_curr_mhz) {
+        set_cpu_freq_rtc(target);
+        s_curr_mhz = target;
+        ESP_LOGI(TAG, "CPU freq => %d MHz (base=%d, r160=%d, r240=%d)",
+                 s_curr_mhz, s_base_mhz, s_req160, s_req240);
+    }
 }
 
 void init_system(void) {
@@ -98,4 +149,53 @@ void set_cpu_freq_rtc(int freq_mhz) {
     }
     rtc_clk_cpu_freq_set_config(&cfg);
     ESP_LOGI(TAG, "CPU agora rodando a %d MHz", freq_mhz);
+}
+
+void cpu_boost_set_base_mhz(int mhz)
+{
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    s_base_mhz = mhz;
+    cpu_apply_locked();
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
+}
+
+int cpu_get_current_mhz(void)
+{
+    int mhz;
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    mhz = s_curr_mhz;
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
+    return mhz;
+}
+
+void cpu_boost_begin_160(void)
+{
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    ++s_req160;
+    cpu_apply_locked();
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
+}
+
+void cpu_boost_end_160(void)
+{
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    if (s_req160 > 0) --s_req160;
+    cpu_apply_locked();
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
+}
+
+void cpu_boost_begin_240(void)
+{
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    ++s_req240;
+    cpu_apply_locked();
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
+}
+
+void cpu_boost_end_240(void)
+{
+    portENTER_CRITICAL(&s_cpu_boost_mux);
+    if (s_req240 > 0) --s_req240;
+    cpu_apply_locked();
+    portEXIT_CRITICAL(&s_cpu_boost_mux);
 }

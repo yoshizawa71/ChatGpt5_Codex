@@ -108,7 +108,6 @@ typedef struct {
 void adc_init(int adc_pin);
 void adc_del_init(void);
 
-//float oneshot_analog_read(enum sensor tipo);
 float oneshot_analog_read(sensor_t tipo);
 void voltage_calibrated(int adc_channel, int *voltage);
 

@@ -11,6 +11,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#ifndef RS485_MAX_SENSORS
+#define RS485_MAX_SENSORS  16   // ajuste se já existir outro define
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,6 +46,7 @@ typedef enum {
     RS485_MEAS_NONE = 0,
     RS485_MEAS_TEMP_C,     /* °C */
     RS485_MEAS_HUM_PCT,    /* %RH */
+    RS485_MEAS_I_RMS,     /* A RMS (energia) — L1/L2/L3 viram subíndices 1..3 */
     /* Exemplos futuros:
        RS485_MEAS_POWER_W,
        RS485_MEAS_ENERGY_KWH,
@@ -88,6 +92,12 @@ int rs485_read_measurements(const rs485_sensor_t *sensor,
 int rs485_poll_all(const rs485_sensor_t *list, size_t count,
                    rs485_measurement_t *out, size_t out_len);
 
+
+// Retorna a lista de sensores cadastrados (canal, address, type, subtype).
+// out: vetor de rs485_sensor_t a ser preenchido
+// max: número máximo de itens no vetor
+// return: quantidade preenchida (>=0) ou <0 em erro
+int rs485_registry_get_snapshot(rs485_sensor_t *out, size_t max);
 /* =========================
  * Probe / identificação
  * =========================

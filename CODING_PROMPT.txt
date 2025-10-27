@@ -1,0 +1,29 @@
+# PROJECT GUARDRAILS (leia antes de agir)
+
+- NÃO invente arquivos, pastas ou funções. Use exatamente o que existe no workspace.
+- Paths reais do projeto (exemplos): 
+  connectivity/ip/messaging/http_wifi/src/
+  connectivity/ip/messaging/mqtt_wifi/src/
+  connectivity/ip/messaging/payload_common/src/
+  connectivity/ip/messaging/payload_common/include/
+  esp_web_server/ (LITTLEFS)
+- JSON: usamos cJSON (NÃO use json_add_* fictício).
+- Estilo: mudanças mínimas, sem dependências novas, sem quebrar compatibilidade.
+- Saída: retorne **apenas patches** no formato unified diff (ou blocos “ANTES/DEPOIS” com o caminho do arquivo).
+- Se precisar criar arquivo novo, mostre: caminho exato + conteúdo completo.
+- Compilação: alterações que não compilam são inaceitáveis; ajuste includes e protótipos.
+- Se eu te mostrar um trecho, altere **aquele** arquivo/trecho; não mude nomes nem mover lógica sem necessidade.
+
+# CONTEXTO TÉCNICO
+- MQTT builders atuais usam cJSON; existem funções como mqtt_payload_build_from_sd_ubidots() e mqtt_payload_build_from_sd_weg().
+- Para timestamps UTC existem utilitários em payload_common: payload_time.h/.c com epoch_ms_utc() e iso8601_utc().
+- Mantenha formatos de payload existentes; adições devem ser opcionais/não disruptivas.
+
+# FORMATO DA RESPOSTA
+- Mostre só o que mudar, assim: 
+  FILE: <caminho/arquivo>
+  --- antes
+  +++ depois
+  (diff unificado), OU blocos “ANTES/DEPOIS” com linha de contexto.
+
+- Nada de pseudo-API. Nada de “talvez”. Seja exato.

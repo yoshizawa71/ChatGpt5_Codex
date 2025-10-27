@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configurações do Dispositivo</title>
+  <link href="/esp_web_server/common_css/Style.css" rel="stylesheet">
+
+</head>
+<body>
+  <h1><span id="company_label"></span> - Configurações do Dispositivo</h1>
+  <h2>
+   <a href="/Home/html/Home.html">Home</a> |
+    <a href="/Device/html/ConfigDevice.html">Dispositivo</a> |
+    <a href="/Network/html/ConfigNetwork.html">Rede</a> |
+    <a href="/Operation/html/ConfigOperation.html">Operação</a> |
+    <a href="/Maintenance/html/Maintenance.html">Manutenção</a> |
+    <a href="/Register/html/RegisterView.html">Registros</a> |
+    <a href="/Exit/html/Exit.html" onclick="return confirm('Sair do Modo Confirmação?')">Sair</a>
+  </h2>
+  <h3>
+  <table>
+    <tr>
+      <th colspan="3" class="msg">Configuração do Dispositivo</th>
+    </tr>
+    <tr>
+      <th rowspan="1">ID</th>
+      <td colspan="2">
+        <input id="device" type="text" name="medidor" value="" size="25" maxlength="29">
+      </td>
+    </tr>
+    <tr>
+      <th rowspan="1">Nome</th>
+      <td colspan="2">
+        <input id="name" type="text" name="name" value="" size="30" maxlength="30">
+      </td>
+    </tr>
+    <tr>
+      <th rowspan="1">Telefone</th>
+      <td colspan="2">
+        <input id="phone" type="text" name="phone" value="" size="30" maxlength="30">
+      </td>
+    </tr>    
+    <tr>
+      <th rowspan="3">
+        <br>
+        Rede local
+        <p></p>
+        <br>
+        <input type="checkbox" id="activate_sta" name="activate_sta"> 
+        <span id="wifi-led" style="background-color: grey;"></span>WIFI
+      </th>
+      
+      <th> 
+        <label>SSID</label>
+      </th>
+      <th colspan="2">
+        <label>SENHA</label>
+      </th>
+    </tr>
+    <tr>
+      <td>Datalogger: <input type="text" id="ssid_ap" name="ssid_ap" value="" size="15" maxlength="15"></td>
+      <td colspan="2"><input type="text" id="wifi_pw_ap" name="wifi_pw_ap" value="" size="15" maxlength="15">
+     <input type="checkbox" onclick="mostrarOcultarSenha()" id="hide_pw">
+<label for="hide_pw">
+  <span class="eye-icon">👁️</span>
+</label>
+    </tr>
+    <tr>
+      <td> Roteador: <input type="text" id="ssid_sta" name="ssid_sta" value="" size="20" maxlength="20">
+      <td colspan="2"> <input type="text" id="wifi_pw_sta" name="wifi_pw_sta" value="" size="20" maxlength="20"></td>
+    </tr> 
+ 
+   <tr>
+      <th rowspan="1">Frequência de gravação dos dados</th>
+      <td colspan="2">
+    <select id="deep_sleep_period" name="deep_sleep_period">
+      <option value="1">1 min</option>
+      <option value="5">5 min</option>
+      <option value="10">10 min</option>
+      <option value="15">15 min</option>
+      <option value="30">30 min </option>
+      <option value="60">60 min</option>
+    </select>
+  </td>
+    </tr>
+    
+ <tr>
+  <th rowspan="2">Tempo de envio de dados</th>
+  <th>
+    <input type="checkbox" id="chk_freq_send_data">
+    <label for="chk_freq_send_data">Modo Frequência</label>
+  </th>
+  <th colspan="2">
+    <input type="checkbox" id="chk_time_send_data">
+    <label for="chk_time_send_data">Modo Tempo (0-23 H)</label>
+  </th>
+</tr>
+<tr>
+  <td>
+    <select id="send_freq" name="send_freq">
+      <option value="1">1 min</option>
+      <option value="5">5 min</option>
+      <option value="15">15 min</option>
+      <option value="1">1 h</option>
+      <option value="2">2 h </option>
+      <option value="4">4 h</option>
+      <option value="8">8 h</option>
+      <option value="12">12 h</option>
+    </select>
+  </td>
+  <td colspan="2">
+primeiro <input id="send_time1" name="send_time1" type="number" min="0" max="23" step="1" size="2">
+segundo <input id="send_time2" name="send_time2" type="number" min="0" max="23" step="1" size="2"><br>
+terceiro <input id="send_time3" name="send_time3" type="number" min="0" max="23" step="1" size="2">
+quarto  <input id="send_time4" name="send_time4" type="number" min="0" max="23" step="1" size="2">
+  </td>
+</tr>
+    
+    <tr>
+      <th rowspan="1">Pulso Ativo
+      <input type="checkbox" id="save_pulse_zero" name="save_pulse_zero">
+      </th>
+      <td> Escala :<input type="text" id="volume" name="volume" value="" size="15" maxlength="8"> litros</td>
+      <td colspan="2">
+        Vazão: <span id="flow_rate"></span> litros/s
+      </td>
+    </tr>
+    <tr>
+      <th rowspan="1">Data</th>
+      <td colspan="2">
+        <input id="date" type="text" name="date" value="" size="20" maxlength="20">
+      </td>
+    </tr>
+    <tr>
+      <th rowspan="1">Hora</th>
+      <td colspan="2">
+        <input id="time" type="text" name="time" value="" size="20" maxlength="20">
+      </td>
+    </tr>
+ 
+ <tr>   
+      <th rowspan="1">Configuração do Sistema </th>
+      <td>
+      <input type="checkbox" id="config_factory" name="config_factory">
+      <label for="config_factory">Finalizado</label>
+      </td>
+      
+      <td colspan="2">
+       <input type="checkbox" id="always_on" name="always_on">
+      <label for="always_on">Sempre Ligado</label>
+      </td>
+    </tr>
+    
+<tr>
+  <th colspan="3" class="msg">
+    <div style="display: flex; align-items: center;">
+      <!-- Toggle à esquerda -->
+      <div style="flex: 1; text-align: left;">
+        <label class="switch">
+          <input type="checkbox" id="device_toggle">
+          <span class="slider round"></span>
+        </label>
+        <!-- Status -->
+        <span id="device_status" class="status-label off">Desligado</span>
+      </div>
+      <!-- Botão Gravar centralizado -->
+      <div style="flex: 1; text-align: center;">
+        <input id="save" type="submit" value="Gravar" onClick="submit_form()">
+      </div>
+      <!-- Spacer à direita -->
+      <div style="flex: 1;"></div>
+    </div>
+  </th>
+</tr>
+  </table>
+  </h3>
+  
+  <script src="/common_jscripts/jquery-3.6.0.min.js"></script>
+  <script src="/common_jscripts/connection_monitor.js"></script>
+  <script type="text/javascript" src="/Device/jscripts/jquery.mask.js"></script> 
+  <script type="text/javascript" src="/Device/jscripts/configDevice.js"></script>
+  <script type="text/javascript" src="/Device/jscripts/show_hide_psw.js"></script>
+  <script type="text/javascript" src="/Device/jscripts/wifi_control.js"></script> <!-- Novo arquivo JS -->
+  <script type="text/javascript">
+  
+  $(document).ready(function(){
+  $('#date').mask('00/00/0000',{placeholder:'__/__/____'});
+  $('#time').mask('00:00:00',{placeholder:'__:__:__'});
+  });
+  </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login de Admin</title>
+  <link href="/esp_web_server/common_css/Style.css" rel="stylesheet">
+</head>
+<body>
+  <h1><span id="company_label"></span> - Login de Admin</h1>
+  <h2>
+   <a href="/Home/html/Home.html">Home</a> |
+    <a href="/Device/html/ConfigDevice.html">Dispositivo</a> |
+    <a href="/Network/html/ConfigNetwork.html">Rede</a> |
+    <a href="/Operation/html/ConfigOperation.html">Operação</a> |
+    <a href="/Maintenance/html/Maintenance.html">Manutenção</a> |
+    <a href="/Register/html/RegisterView.html">Registros</a> |
+    <a href="/Exit/html/Exit.html" onclick="return confirm('Sair do Modo Confirmação?')">Sair</a>
+  </h2>
+  <h3>
+  <table>
+    <tr>
+      <th colspan="2" class="msg">Configuração de Operação</th>
+    </tr>
+	
+	  <tr>
+      <th rowspan="1">Chave</th>
+      <td> <input type="password" id="key" name="key" value="" size="25" maxlength="29"></td>
+    </tr>
+	
+    <tr>
+      <th colspan="2" class="msg"><input id="save" type="submit" value="Entrar" onClick="submit_form()"></th>
+    </tr>
+  </table>
+  </h3>
+  <script src="/common_jscripts/jquery-3.6.0.min.js"></script>
+  <script src="/common_jscripts/connection_monitor.js"></script>
+  <script src="/Operation/jscripts/configAdminLogin.js"></script>
+
+</body>
+</html>

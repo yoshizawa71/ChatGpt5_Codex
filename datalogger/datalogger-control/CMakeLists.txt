@@ -10,18 +10,26 @@ set(src_driver
                "src/battery_monitor.c"
                )
 
+set(reqs
+    soc nvs_flash ulp driver
+    app_update esp_http_client esp_https_ota
+    datalogger-driver esp_http_server json mdns
+    spiffs oled_display rele pressure esp_wifi system
+    4G log_mux
+)      
+
+# Quando Modbus Serial estiver habilitado, dependa do componente RS485
+# (ele já compila rs485_manager.c, rs485_hw.c etc.)
+if(CONFIG_MODBUS_SERIAL_ENABLE)
+    list(APPEND reqs RS485)
+endif()         
+   
 idf_component_register(SRCS "${src_driver}"
                     INCLUDE_DIRS "include" "."
-                    REQUIRES soc nvs_flash ulp driver modem 
-                            app_update esp_http_client esp_https_ota
-                            datalogger-driver esp_http_server json mdns
-                            spiffs oled_display rele pressure esp_wifi system
-                            4G RS485 log_mux
+                    REQUIRES ${reqs}
                             )
  
-# Garante que o ld considere rs485_manager_ping "indefinido" desde o início,
-# assim ele extrai o objeto de libRS485.a mesmo que a lib venha antes na linha.
-target_link_options(${COMPONENT_LIB} PUBLIC "-Wl,--undefined=rs485_manager_ping")                       
+                      
 
 # ULP support additions to component CMakeLists.txt.
 #
@@ -40,8 +48,5 @@ set(ulp_exp_dep_srcs "src/sleep_control.c")
 # 4. Call function to build ULP binary and embed in project using the argument
 #    values above.
 ulp_embed_binary(${ulp_app_name} "${ulp_s_sources}" "${ulp_exp_dep_srcs}")
-
-# força incluir dl_features.h no início de TODO .c desse componente
-target_compile_options(${COMPONENT_LIB} PUBLIC -include "ifdef_features.h")
 
  component_compile_options(-Wno-error=format= -Wno-format) #Evitar Format Error 

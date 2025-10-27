@@ -10,7 +10,7 @@
 #include "esp_err.h"
 
 // Inicialização do publicador (chame UMA vez no boot do Wi-Fi/MQTT)
-void mqtt_publisher_init(void);
+//void mqtt_publisher_init(void);
 
 // Publica UM pacote agora (monta payload, conecta se preciso e publica)
 esp_err_t mqtt_wifi_publish_now(void);

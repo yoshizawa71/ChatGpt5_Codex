@@ -1,17 +1,99 @@
-menu "Data Logger Configuration"
-    choice MODEM_DEVICE
-        prompt "Choose supported modem device (DCE)"
-        default MODEM_DEVICE_SARA_G450
-        help
-            Select modem device connected to the ESP DTE.
-        config MODEM_DEVICE_SIM800
-            bool "SIM800"
-            help
-                SIMCom SIM800L is a GSM/GPRS module.
-                It supports Quad-band 850/900/1800/1900MHz.
-        config MODEM_DEVICE_SARA_G450
-            bool "SARA-G450"
-            help
-                uBlox module SARA-G450.
-    endchoice
-endmenu
+# Kconfig.projbuild — Smart IoT Platform (recursos)
+
+menu "Smart IoT Platform — Recursos"
+
+config SARA_R422_ENABLE
+    bool "Ativar modem u-blox SARA-R422 (LTE/NB-IoT)"
+    default n
+    help
+	Ativa o suporte ao módulo celular SARA-R422 (LTE-M / NB-IoT / 2G fallback conforme firmware).
+
+config DISPLAY_ENABLE
+    bool "Ativar Display do dispositivo"
+    default n
+    help
+	Liga o subsistema de Display (ex.: OLED/SSD1306, TFT/ILI9341).
+
+menu "RS-485"
+    config RS485_UART_NUM
+        int "UART para RS-485 (0, 1 ou 2)"
+        range 0 2
+        default 2
+    config RS485_TX_PIN
+        int "GPIO TX (DI do transceiver)"
+        default 17
+    config RS485_RX_PIN
+        int "GPIO RX (RO do transceiver)"
+        default 16
+    config RS485_DE_RE_PIN
+        int "GPIO DE/RE (RTS)"
+        default 18
+endmenu  # RS-485
+
+menu "Buses e Fieldbus"
+
+menuconfig MODBUS_BUILD_ENABLE
+    bool "Ativar Modbus"
+    default n
+    help
+	Habilita a funcionalidade Modbus no firmware. Se ligado, selecione o backend abaixo.
+
+if MODBUS_BUILD_ENABLE
+
+choice MODBUS_BACKEND
+    prompt "Backend do Modbus"
+    default MODBUS_BACKEND_SERIAL_RTU
+    help
+	Escolha o backend de transporte do Modbus para este firmware.
+
+config MODBUS_BACKEND_SERIAL_RTU
+    bool "Serial RTU (RS-485)"
+
+config MODBUS_BACKEND_TCP
+    bool "TCP (Wi-Fi/Ethernet)"
+
+endchoice
+
+config MODBUS_SERIAL_ENABLE
+    bool
+    default y if MODBUS_BACKEND_SERIAL_RTU
+
+config MODBUS_TCP_ENABLE
+    bool
+    default y if MODBUS_BACKEND_TCP
+
+config MODBUS_GUARD_ENABLE
+    bool "Ativar guarda de Modbus (mutex/timeouts)"
+    default y if MODBUS_SERIAL_ENABLE
+    depends on MODBUS_SERIAL_ENABLE
+    help
+	Proporciona acesso ordenado ao barramento (mutex, timeouts, backoff) no backend Serial.
+
+endif  # MODBUS_BUILD_ENABLE
+
+endmenu  # Buses e Fieldbus
+
+
+menu "Serviços remotos"
+
+config REMOTE_MDNS
+    bool "Anunciar via mDNS no STA"
+    default n
+    help
+	Permite anunciar o hostname (ex.: smart-iot.local) e o serviço HTTP na rede local.
+
+endmenu  # Serviços remotos
+
+menu "Energia & Debug"
+
+config FC_TRACE_INTERACTION
+    bool "Traçar interações do front (factory console)"
+    default n
+    help
+	Emite logs de interações de UI (ex.: /ping, /config*) para diagnóstico.
+
+endmenu  # Energia & Debug
+
+comment "Dica: habilite SARA_R422_ENABLE se for usar LTE/NB-IoT"
+
+endmenu  # Smart IoT Platform — Recursos

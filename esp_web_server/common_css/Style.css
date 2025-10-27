@@ -1,0 +1,199 @@
+body {
+  font-family: Verdana, Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  color: #ffffff;
+  margin: 5px;
+  background: #d0d0d0;
+  min-width: 600px;
+  max-width: 780px;
+ }
+h1 {
+  font-size: 18px;
+  text-align: center;
+  color: rgb(60, 153, 234);
+  background: #787878;
+  border-radius: 7px 7px 0px 0px;
+  padding: 7px 4px 0px 4px;
+  margin: 0px;
+}
+h2 {
+  font-size: 12px;
+  text-align: left;
+  color: rgb(60, 153, 234);
+  background: #787878;
+  padding: 4px 8px 4px 8px;
+  margin: 0px;
+  border: #787878 solid 2px;
+}
+h3 {
+  font-size: 12px;
+  text-align: left;
+  font-weight: normal;
+  background: #ffffff;
+  padding: 7px;
+  margin: 0px;
+  border: #787878 solid 2px;
+  border-radius: 0px 0px 7px 7px;
+}
+table {
+  width: 100%;
+}
+th {
+  font-size: 11px;
+  background: rgb(60, 153, 234);
+  text-align: center;
+  padding: 5px;
+  border-radius: 3px 0px 0px 3px;
+  width: 25%;
+}
+td {
+  font-size: 11px;
+  background: #787878;
+  padding: 5px;
+  border-radius: 0px 3px 3px 0px;
+}
+a {
+  font-size: 12px;
+  color: #ffffff;
+}
+input[type=submit] {
+  border: 2px solid #333333;
+  border-radius: 5px;
+  padding: 5px;
+  width: 90px;
+}
+.msg {
+  font-size: 14px;
+  text-align: center;
+  padding: 5px;
+  border-radius: 3px;
+}
+
+#sensor_value {
+    margin-left: 5px;
+    transition: color 0.3s ease, background-color 0.3s ease;
+    color: #2563eb; /* Azul médio */
+    font-size: 18px;
+    font-weight: bold;
+    padding: 2px 6px;
+    background-color: #ffffff; /* Fundo branco */
+    border-radius: 3px;
+    background: rgb(60, 153, 234); /* Fundo azul para visibilidade */
+  color: #ffffff; /* Texto branco */
+}
+input[type="radio"] {
+  accent-color: #007bff; /* Azul vibrante para a bolinha */
+  margin-right: 5px; /* EspaÃ§o entre bolinha e texto */
+}
+label {
+  margin-right: 15px; /* EspaÃ§o entre botÃµes de rÃ¡dio */
+  font-size: 12px; /* Consistente com o corpo */
+  color: #ffffff; /* Texto branco para fundo escuro */
+}
+
+#sensor_value.active-value {
+    color: #2563eb;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Aqui comenÃ§a o Led do status */
+#wifi-led {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background-color: grey;
+}
+.connected {
+  background-color: green !important;
+}
+.disconnected {
+  background-color: red;
+}
+
+.eye-icon {
+  position: relative;
+  display: inline-block;
+  font-size: 1.2em;
+}
+.eye-icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background-color: currentColor;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+/* Quando o checkbox estiver marcado, mostramos o risco */
+#hide_pw:checked + label .eye-icon::after {
+  opacity: 1;
+}
+
+/* ===== Toggle Ajustado para Bola Centralizada ===== */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 50px;
+  height: 24px;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+/* track com borda cinza e fundo vermelho (OFF) */
+.slider {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #f44336;    /* vermelho OFF */
+  border: 1px solid #888;       /* contorno cinza */
+  border-radius: 12px;          /* metade da altura */
+  box-sizing: border-box;
+  transition: background-color .2s;
+}
+/* knob branco com borda cinza e centrado verticalmente */
+.slider:before {
+  content: "";
+  position: absolute;
+  top: 1px;                     /* (24 – 22) / 2 */
+  left: 1px;
+  width: 22px;
+  height: 22px;
+  background-color: #fff;
+  border: 1px solid #888;
+  border-radius: 50%;
+  box-sizing: border-box;
+  transition: transform .2s;
+}
+/* estado ON: track verde */
+.switch input:checked + .slider {
+  background-color: #4caf50;    /* verde ON */
+}
+/* move o knob para a direita (48 px inner width – 22 px knob) = 26 px */
+.switch input:checked + .slider:before {
+  transform: translateX(26px);
+}
+
+/* ==== status-label ==== */
+.status-label {
+  margin-left: 8px;
+  font-weight: bold;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #fff;
+}
+/* OFF: fundo vermelho */
+.status-label.off {
+  background-color: #f44336;
+}
+/* ON: fundo verde */
+.status-label.on {
+  background-color: #4caf50;

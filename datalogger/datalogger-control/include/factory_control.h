@@ -8,48 +8,6 @@
 #ifndef DATALOGGER_DATALOGGER_CONTROL_INCLUDE_FACTORY_CONTROL_H_
 #define DATALOGGER_DATALOGGER_CONTROL_INCLUDE_FACTORY_CONTROL_H_
 
-/*#include <string.h>
-#include <fcntl.h>
-#include <datalogger_control.h>
-#include "datalogger_driver.h"
-#include <time.h>
-
-#include "sara_r422.h"
-#include "tcp_log_server.h"
-#include "modbus_rtu_master.h"
-#include "log_mux.h"
-#include "wifi_softap_sta.h"
-#include "driver/sdmmc_host.h"
-#include "esp_http_server.h"
-#include "esp_sleep.h"
-#include "esp_system.h"
-#include "esp_log.h"
-#include "esp_event.h"
-#include "esp_vfs.h"
-#include "cJSON.h"
-#include "mdns.h"
-
-#include "esp_littlefs.h"
-#include "lwip/apps/netbiosns.h"
-#include "datalogger_driver.h"
-#include "oled_display.h"
-#include "sdmmc_driver.h"
-#include "pressure_meter.h"
-#include "pulse_meter.h"
-#include "rele.h"
-#include "esp_wifi.h"
-
-#include "ff.h"
-//#include "ulp_datalogger-control.h"
-#include "sleep_control.h"
-
-#include "pressure_calibrate.h"
-#include "system.h"
-#include "TCA6408A.h"
-
-#include "rs485_registry.h"
-#include "xy_md02_driver.h"
-#include "rs485_manager.h"*/
 
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"

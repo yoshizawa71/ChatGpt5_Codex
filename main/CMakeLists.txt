@@ -17,6 +17,10 @@ idf_component_register(SRCS "main.c" "main_control.c"
                              rele
                              tcp_log_console
                              mqtt_wifi
+                             http_wifi
+                             portal_state
+                             payload_common
+                             RS485
                              system
                              )
                              

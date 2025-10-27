@@ -45,6 +45,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "sdkconfig.h"
 
 /* ---- Assinaturas padrão (usadas se você não fornecer callbacks) ----
  * Se seu projeto já tem essas funções, basta linkar normalmente.
@@ -60,7 +61,7 @@ extern "C" {
 #endif
 
 
-#if !CONFIG_MODBUS_ENABLE
+#if !CONFIG_MODBUS_SERIAL_ENABLE
 
 typedef struct {
     esp_err_t (*prepare_hw)(void);
@@ -79,7 +80,7 @@ static inline void      mb_session_end(void) {}
 static inline bool      mb_session_is_active(void) { return false; }
 #define MB_SESSION_WITH(wait_ticks) for (int _mb_once = 0; _mb_once; _mb_once = 0)
 
-#else   // CONFIG_MODBUS_ENABLE == 1
+#else  
 
 // Do seu stack Modbus (se existir)
 esp_err_t modbus_master_init(void);
@@ -140,7 +141,7 @@ static inline bool mb_session_is_active(void) { return false; }
 
 #endif // CONFIG_MODBUS_GUARD_ENABLE
 
-#endif // CONFIG_MODBUS_ENABLE
+#endif // CONFIG_MODBUS_SERIAL_ENABLE
 
 #ifdef __cplusplus
 }

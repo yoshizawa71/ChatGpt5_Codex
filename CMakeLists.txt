@@ -33,6 +33,7 @@ list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/connectivity/ip/messaging
     ${CMAKE_SOURCE_DIR}/connectivity/services/tcp_log_console
     ${CMAKE_SOURCE_DIR}/connectivity/services/log_mux
+    ${CMAKE_SOURCE_DIR}/connectivity/services/portal_state
     ${CMAKE_SOURCE_DIR}/connectivity/services/time_sync_sntp
     ${CMAKE_SOURCE_DIR}/datalogger/datalogger-control
     ${CMAKE_SOURCE_DIR}/datalogger/datalogger-driver

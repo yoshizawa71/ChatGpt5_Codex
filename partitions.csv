@@ -3,8 +3,8 @@
 nvs,             data, nvs,            ,  0x6000,
 otadata,         data, ota,            ,  0x2000,
 phy_init,        data, phy,            ,  0x2000,
-factory,         app,  factory,        ,  2048k,
-ota_0,           app,  ota_0,          ,  2048k,
-ota_1,           app,  ota_1,          ,  2048k,
-esp_web_server,  data, littlefs,       ,  512k,
-littlefs,        data, littlefs,       ,  512k,
+ota_0,           app,  ota_0,          ,  0x2E0000,   
+ota_1,           app,  ota_1,          ,  0x2E0000,  
+esp_web_server,  data, littlefs,       ,  1M,
+littlefs,        data, littlefs,       ,  1M,
+
