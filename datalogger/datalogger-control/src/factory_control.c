@@ -1571,30 +1571,40 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     static volatile bool s_global_inflight = false;
 
     char qbuf[64], param[16];
+    qbuf[0] = '\0';
     int addr = 0;
+    int channel = -1;
 //    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
     
         if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK)
+                channel = atoi(param);
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
             /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
             /* se quiser forçar um tipo no futuro, podemos usar req_type aqui */
         }
     }
-    
+
+    ESP_LOGI("RS485_PING", "start qlen=%d channel=%d address=%d query='%s'", qlen, channel, addr, qbuf);
+
     if (addr <= 0 || addr > 247) {
+        ESP_LOGI("RS485_PING", "invalid params: channel=%d address=%d", channel, addr);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
+        ESP_LOGI("RS485_PING", "reply (invalid): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
 
     // Se o AP estiver suspenso, responda sem acessar o barramento
     if (!wifi_ap_is_running()) {
+        ESP_LOGI("RS485_PING", "wifi ap suspended: channel=%d address=%d", channel, addr);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
+        ESP_LOGI("RS485_PING", "reply (ap_suspended): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
         return ESP_OK;
     }
 
@@ -1603,20 +1613,28 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     // Circuit-breaker por backoff
     if (C->backoff_until && now_before(now, C->backoff_until)) {
+        ESP_LOGI("RS485_PING", "backoff active: channel=%d address=%d until=%u", channel, addr, (unsigned)C->backoff_until);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
+        ESP_LOGI("RS485_PING", "reply (backoff): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
         return ESP_OK;
     }
 
     // Rate limit por endereço e global
     if ((C->ts && (now - C->ts) < PER_ADDR_MIN) || (s_global_last && (now - s_global_last) < GLOBAL_MIN)) {
         // devolve cache
+        ESP_LOGI("RS485_PING", "rate-limited: channel=%d address=%d alive=%d fc=0x%02x", channel, addr, C->alive, C->fc);
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
+        if (json) {
+            ESP_LOGI("RS485_PING", "reply (cached): %s", json);
+        } else {
+            ESP_LOGI("RS485_PING", "reply (cached): {\"alive\":false}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
         free(json); cJSON_Delete(root);
@@ -1625,11 +1643,17 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
      if (C->inflight || s_global_inflight) {
+        ESP_LOGI("RS485_PING", "inflight cache: channel=%d address=%d alive=%d fc=0x%02x", channel, addr, C->alive, C->fc);
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
+        if (json) {
+            ESP_LOGI("RS485_PING", "reply (inflight): %s", json);
+        } else {
+            ESP_LOGI("RS485_PING", "reply (inflight): {\"alive\":false}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
         free(json); cJSON_Delete(root);
@@ -1660,23 +1684,33 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         }
     }*/
     
-    modbus_guard_t g = {0};  
-//    if (!modbus_guard_try_begin(&g, 10)) {
-		bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
+    modbus_guard_t g = {0};
+    ESP_LOGI("RS485_PING", "guard try begin: window=60ms channel=%d address=%d", channel, addr);
+    bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
+    ESP_LOGI("RS485_PING", "guard try result: channel=%d address=%d status=%s", channel, addr, got ? "ok" : "busy");
     if (!got) {
         // pequeno retry: dá uma chance de pegar o barramento entre leituras do central
+        ESP_LOGI("RS485_PING", "guard retry wait: channel=%d address=%d", channel, addr);
         vTaskDelay(pdMS_TO_TICKS(20));
+        ESP_LOGI("RS485_PING", "guard retry begin: window=40ms channel=%d address=%d", channel, addr);
         got = modbus_guard_try_begin(&g, 40);   // janela total até ~120 ms no pior caso
-         }
+        ESP_LOGI("RS485_PING", "guard retry result: channel=%d address=%d status=%s", channel, addr, got ? "ok" : "busy");
+    }
     if (!got) {
-		
+
         // Barramento ocupado -> devolve CACHE + busy=true
+        ESP_LOGI("RS485_PING", "guard busy -> respond busy: channel=%d address=%d", channel, addr);
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "busy", true);
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
+        if (json) {
+            ESP_LOGI("RS485_PING", "reply (busy): %s", json);
+        } else {
+            ESP_LOGI("RS485_PING", "reply (busy): {\"alive\":false,\"busy\":true}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
         free(json); cJSON_Delete(root);
@@ -1686,12 +1720,16 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     }
     // Com o barramento exclusivo, faz a autodetecção curta
     {
+        ESP_LOGI("RS485_PING", "registry probe begin: channel=%d address=%d", channel, addr);
         bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
         alive = ok;
         ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
+        ESP_LOGI("RS485_PING", "registry probe result: alive=%d used_fc=0x%02x ret=%s", alive, used_fc, esp_err_to_name(ret));
     }
     // Libera o barramento ANTES de montar a resposta
+    ESP_LOGI("RS485_PING", "guard end (before release): channel=%d address=%d", channel, addr);
     modbus_guard_end(&g);
+    ESP_LOGI("RS485_PING", "guard released: channel=%d address=%d", channel, addr);
 
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
     C->inflight = false;
@@ -1713,6 +1751,11 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
     cJSON_AddBoolToObject(root, "exception", false);
     char *json = cJSON_PrintUnformatted(root);
+    if (json) {
+        ESP_LOGI("RS485_PING", "reply (final): %s", json);
+    } else {
+        ESP_LOGI("RS485_PING", "reply (final): {\"alive\":false}");
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
     free(json); cJSON_Delete(root);

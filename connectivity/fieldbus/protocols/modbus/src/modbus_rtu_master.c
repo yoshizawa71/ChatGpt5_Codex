@@ -343,9 +343,13 @@ esp_err_t modbus_master_read_holding_registers(uint8_t slave_addr,
 // Em erro (ex.: timeout), retorna o último esp_err_t.
 esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
 {
+    ESP_LOGI("MODBUS_MASTER", "ping start: addr=%u", (unsigned)slave_addr);
     if (alive)   *alive = false;
     if (used_fc) *used_fc = 0x00;
-    if (slave_addr == 0 || slave_addr > 247) return ESP_ERR_INVALID_ARG;
+    if (slave_addr == 0 || slave_addr > 247) {
+        ESP_LOGI("MODBUS_MASTER", "ping invalid addr: %u", (unsigned)slave_addr);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     // Garante master UP (idempotente)
     if (!s_master_ready) {
@@ -374,16 +378,19 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
             req.command   = hint;
             req.reg_start = hint_regs[i];
 
+            ESP_LOGI("MODBUS_MASTER", "ping hint try: addr=%u fc=0x%02x reg=0x%04x", (unsigned)slave_addr, req.command, req.reg_start);
             esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
             if (err == ESP_ERR_INVALID_STATE) {
                 (void) modbus_master_init();
                 err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
             }
+            ESP_LOGI("MODBUS_MASTER", "ping hint result: addr=%u fc=0x%02x reg=0x%04x err=%s", (unsigned)slave_addr, req.command, req.reg_start, esp_err_to_name(err));
             if (err == ESP_OK) {
                 if (alive)   *alive   = true;
                 if (used_fc) *used_fc = req.command;
                 // reforça a dica
                 s_ping_fc_hint[slave_addr] = req.command;
+                ESP_LOGI("MODBUS_MASTER", "ping success (hint): addr=%u used_fc=0x%02x", (unsigned)slave_addr, req.command);
                 return ESP_OK;
             }
             last_err = err;
@@ -404,16 +411,19 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
         req.command   = tries[i].fc;
         req.reg_start = tries[i].reg;
 
+        ESP_LOGI("MODBUS_MASTER", "ping try: addr=%u fc=0x%02x reg=0x%04x", (unsigned)slave_addr, req.command, req.reg_start);
         esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
         if (err == ESP_ERR_INVALID_STATE) {
             (void) modbus_master_init();
             err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
         }
+        ESP_LOGI("MODBUS_MASTER", "ping result: addr=%u fc=0x%02x reg=0x%04x err=%s", (unsigned)slave_addr, req.command, req.reg_start, esp_err_to_name(err));
 
         if (err == ESP_OK) {
             if (alive)   *alive   = true;
             if (used_fc) *used_fc = req.command;
             s_ping_fc_hint[slave_addr] = req.command; // guarda dica para os próximos pings
+            ESP_LOGI("MODBUS_MASTER", "ping success: addr=%u used_fc=0x%02x", (unsigned)slave_addr, req.command);
             return ESP_OK;
         }
 
@@ -421,6 +431,7 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
     }
 
     // Ninguém respondeu
+    ESP_LOGI("MODBUS_MASTER", "ping failure: addr=%u last_err=%s", (unsigned)slave_addr, esp_err_to_name(last_err));
     return last_err; // tipicamente ESP_ERR_TIMEOUT
 }
 

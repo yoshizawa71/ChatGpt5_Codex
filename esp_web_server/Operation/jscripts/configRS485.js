@@ -88,12 +88,21 @@ let lastPingTarget = { channel: null, address: null };
 
 function setPingStatus(text) {
   const $status = $('#rs485_status');
-  if ($status.length) $status.text(text || '');
+  const msg = text || '';
+  console.debug('[RS485] status ->', msg);
+  if ($status.length) {
+    $status.text(msg);
+  }
 }
 
-function enableAddButton(enabled) {
+function enableAddButton(enabled, reason) {
   const $btn = $('#addSensor');
-  if ($btn.length) $btn.prop('disabled', !enabled);
+  const state = enabled ? 'enabled' : 'disabled';
+  const why = reason ? ` (${reason})` : '';
+  console.debug(`[RS485] add button ${state}${why}`);
+  if ($btn.length) {
+    $btn.prop('disabled', !enabled);
+  }
 }
 
 function readFormState() {
@@ -114,17 +123,18 @@ function resetPingState(message) {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   lastPingAlive = false;
   lastPingTarget = { channel: null, address: null };
-  enableAddButton(false);
+  enableAddButton(false, 'resetPingState');
   if (typeof message === 'string') setPingStatus(message);
 }
 
 function schedulePing(delayMs) {
   if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-  enableAddButton(false);
+  enableAddButton(false, 'schedulePing');
   lastPingAlive = false;
   lastPingTarget = { channel: null, address: null };
   const wait = typeof delayMs === 'number' ? Math.max(0, delayMs) : 0;
+  console.debug('[RS485] schedulePing delay=%dms', wait);
   pingTimer = setTimeout(doPingOnce, wait);
 }
 
@@ -132,7 +142,8 @@ function doPingOnce() {
   pingTimer = null;
   const form = readFormState();
 
-  enableAddButton(false);
+  console.debug('[RS485] doPingOnce start', { channel: form.channel, address: form.address });
+  enableAddButton(false, 'doPingOnce-start');
   lastPingAlive = false;
 
   if (!Number.isInteger(form.channel) || form.channel <= 0 ||
@@ -145,12 +156,14 @@ function doPingOnce() {
   lastPingTarget = { channel: form.channel, address: form.address };
 
   const url = `/rs485Ping?channel=${encodeURIComponent(form.channel)}&address=${encodeURIComponent(form.address)}`;
+  console.debug('[RS485] fetch', url);
   fetch(url, { cache: 'no-store' })
     .then((res) => {
       if (!res.ok) throw new Error('HTTP error');
       return res.json();
     })
     .then((data) => {
+      console.debug('[RS485] response', data);
       const current = readFormState();
       if (current.channel !== form.channel || current.address !== form.address) {
         return; // campos alterados durante o ping; ignora resultado antigo
@@ -159,6 +172,7 @@ function doPingOnce() {
       if (data && data.busy) {
         setPingStatus('Barramento ocupado, tentando…');
         retryTimer = setTimeout(() => {
+          console.debug('[RS485] retrying ping after busy');
           retryTimer = null;
           doPingOnce();
         }, BUSY_RETRY_MS);
@@ -167,21 +181,22 @@ function doPingOnce() {
 
       if (data && data.alive) {
         setPingStatus('Sensor detectado!');
-        enableAddButton(true);
+        enableAddButton(true, 'ping-alive');
         lastPingAlive = true;
       } else {
         setPingStatus('Não detectado');
-        enableAddButton(false);
+        enableAddButton(false, 'ping-dead');
         lastPingAlive = false;
       }
     })
-    .catch(() => {
+    .catch((err) => {
+      console.debug('[RS485] fetch error', err);
       const current = readFormState();
       if (current.channel !== form.channel || current.address !== form.address) {
         return;
       }
       setPingStatus('Falha no ping');
-      enableAddButton(false);
+      enableAddButton(false, 'ping-error');
       lastPingAlive = false;
     });
 }
