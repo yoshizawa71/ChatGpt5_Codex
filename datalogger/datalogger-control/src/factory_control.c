@@ -1574,13 +1574,21 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     qbuf[0] = '\0';
     int addr = 0;
     int channel = -1;
+    // --- [FIX] flags/espelho de "channel" para o JSON opcional ---
+    bool channel_param_present = false;
+    int  ch = -1;
 //    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
     
         if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
-            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK)
-                channel = atoi(param);
+           /* if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK)
+                channel = atoi(param);*/
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) {
+                channel_param_present = true;
+                ch = atoi(param);
+                channel = ch; // mantém sua variável existente coerente    
+               }
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
             /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
@@ -1629,6 +1637,12 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+
+        if (channel_param_present) {
+            cJSON_AddNumberToObject(root, "channel", ch);
+        }
+        cJSON_AddBoolToObject(root, "busy", false);
+
         char *json = cJSON_PrintUnformatted(root);
         if (json) {
             ESP_LOGI("RS485_PING", "reply (cached): %s", json);
@@ -1648,6 +1662,12 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+
+        if (channel_param_present) {
+            cJSON_AddNumberToObject(root, "channel", ch);
+        }
+        cJSON_AddBoolToObject(root, "busy", true);
+
         char *json = cJSON_PrintUnformatted(root);
         if (json) {
             ESP_LOGI("RS485_PING", "reply (inflight): %s", json);
@@ -1750,6 +1770,12 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "alive", alive);
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
     cJSON_AddBoolToObject(root, "exception", false);
+
+    if (channel_param_present) {
+        cJSON_AddNumberToObject(root, "channel", ch);
+    }
+    cJSON_AddBoolToObject(root, "busy", false);
+
     char *json = cJSON_PrintUnformatted(root);
     if (json) {
         ESP_LOGI("RS485_PING", "reply (final): %s", json);
