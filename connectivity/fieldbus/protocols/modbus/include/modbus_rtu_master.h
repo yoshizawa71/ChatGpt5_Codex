@@ -11,6 +11,16 @@
 #include "mbcontroller.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
+
+#ifndef CONFIG_MODBUS_GUARD_DIAGNOSTICS
+#define CONFIG_MODBUS_GUARD_DIAGNOSTICS 0
+#endif
+
+#ifndef CONFIG_MODBUS_GUARD_DISABLE
+#define CONFIG_MODBUS_GUARD_DISABLE 0
+#endif
 
 /* -------- Modelagem (mantida) -------- */
 typedef struct {
@@ -32,10 +42,32 @@ typedef struct {
  */
 typedef struct {
     bool locked;
+    TaskHandle_t owner_task;
+    const char *owner_file;
+    const char *owner_func;
+    int owner_line;
+    TickType_t lock_ts;
 } modbus_guard_t;
 
+typedef struct {
+    bool locked;
+    TaskHandle_t owner_task;
+    const char *owner_file;
+    const char *owner_func;
+    int owner_line;
+    TickType_t lock_ts;
+} modbus_guard_diag_snapshot_t;
+
+bool modbus_guard_try_begin_at(modbus_guard_t *g,
+                               TickType_t timeout_ms,
+                               const char *file,
+                               const char *func,
+                               uint32_t line);
 bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms);
 void modbus_guard_end(modbus_guard_t *g);
+void modbus_guard_debug_dump(void);
+void modbus_guard_diag_snapshot(modbus_guard_diag_snapshot_t *out);
+void modbus_guard_force_end(void);
 
 /* -------- Inicialização / tarefa leitora -------- */
 esp_err_t modbus_master_init(void);

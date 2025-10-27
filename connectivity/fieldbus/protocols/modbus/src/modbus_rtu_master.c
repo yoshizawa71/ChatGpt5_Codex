@@ -8,12 +8,15 @@
 
 #include "modbus_rtu_master.h"
 #include "driver/uart.h"
-#include "rs485_hw.h" 
+#include "rs485_hw.h"
 #include <string.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "freertos/portmacro.h"
+#include "sdkconfig.h"
 #include "driver/uart.h"
 #include "mbcontroller.h"
 #include "log_mux.h"
@@ -70,8 +73,15 @@
 
 static const char *TAG = "MODBUS_MASTER";
 
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+#undef LOG_LOCAL_LEVEL
+#define LOG_LOCAL_LEVEL ESP_LOG_INFO
+#endif
+
 /* Mutex para serializar o acesso ao barramento (drivers concorrentes, endpoints, etc.) */
 static SemaphoreHandle_t s_mb_req_mutex = NULL;
+static modbus_guard_diag_snapshot_t s_guard_diag = {0};
+static portMUX_TYPE s_guard_diag_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* Handler do master (mantido internamente pela esp-modbus) — não é necessário guardar globalmente,
    mas deixamos explícito para facilitar depuração futura. */
@@ -269,25 +279,254 @@ esp_err_t modbus_master_deinit(void)
 }
 
 /* =================== Guard público (usa o MESMO mutex) =================== */
-bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms)
+static void modbus_guard_diag_store(const modbus_guard_t *g)
 {
-    if (!g) return false;
-    g->locked = false;
-    if (!s_mb_req_mutex) return false;
-    if (xSemaphoreTakeRecursive(s_mb_req_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    portENTER_CRITICAL(&s_guard_diag_lock);
+    s_guard_diag.locked = g->locked;
+    s_guard_diag.owner_task = g->owner_task;
+    s_guard_diag.owner_file = g->owner_file;
+    s_guard_diag.owner_func = g->owner_func;
+    s_guard_diag.owner_line = g->owner_line;
+    s_guard_diag.lock_ts = g->lock_ts;
+    portEXIT_CRITICAL(&s_guard_diag_lock);
+#else
+    (void)g;
+#endif
+}
+
+static void modbus_guard_diag_clear(void)
+{
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    portENTER_CRITICAL(&s_guard_diag_lock);
+    memset(&s_guard_diag, 0, sizeof(s_guard_diag));
+    portEXIT_CRITICAL(&s_guard_diag_lock);
+#endif
+}
+
+bool modbus_guard_try_begin_at(modbus_guard_t *g,
+                               TickType_t timeout_ms,
+                               const char *file,
+                               const char *func,
+                               uint32_t line)
+{
+    if (!g) {
+        return false;
+    }
+    memset(g, 0, sizeof(*g));
+
+#if CONFIG_MODBUS_GUARD_DISABLE
+    g->locked = true;
+    g->owner_task = xTaskGetCurrentTaskHandle();
+    g->owner_file = file;
+    g->owner_func = func;
+    g->owner_line = (int)line;
+    g->lock_ts = xTaskGetTickCount();
+    modbus_guard_diag_store(g);
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    ESP_LOGI("MODBUS_GUARD",
+             "LOCK(bypass) by %s:%d %s() task=%p",
+             file ? file : "<null>",
+             (int)line,
+             func ? func : "<null>",
+             (void*)g->owner_task);
+#endif
+    return true;
+#else
+    if (!s_mb_req_mutex) {
+        return false;
+    }
+
+    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+    TickType_t tmo_ticks = pdMS_TO_TICKS(timeout_ms);
+    if (xSemaphoreTakeRecursive(s_mb_req_mutex, tmo_ticks) == pdTRUE) {
         g->locked = true;
+        g->owner_task = caller;
+        g->owner_file = file;
+        g->owner_func = func;
+        g->owner_line = (int)line;
+        g->lock_ts = xTaskGetTickCount();
+        modbus_guard_diag_store(g);
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+        ESP_LOGI("MODBUS_GUARD",
+                 "LOCK by %s:%d %s() task=%p at=%u",
+                 file ? file : "<null>",
+                 (int)line,
+                 func ? func : "<null>",
+                 (void*)caller,
+                 (unsigned)g->lock_ts);
+#endif
         return true;
     }
-    ESP_LOGW("MB/SESS", "timeout aguardando exclusividade do Modbus");
+
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    modbus_guard_diag_snapshot_t snap = {0};
+    modbus_guard_diag_snapshot(&snap);
+    uint32_t held_ms = 0;
+    if (snap.locked) {
+        TickType_t now = xTaskGetTickCount();
+        TickType_t delta = now - snap.lock_ts;
+        held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    }
+    ESP_LOGW("MODBUS_GUARD",
+             "BUSY wait_ms=%u holder=%p site=%s:%d %s() held=%u ms",
+             (unsigned)timeout_ms,
+             (void*)snap.owner_task,
+             snap.owner_file ? snap.owner_file : "<none>",
+             snap.owner_line,
+             snap.owner_func ? snap.owner_func : "<none>",
+             (unsigned)held_ms);
+#else
+    (void)timeout_ms;
+#endif
     return false;
+#endif
+}
+
+bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms)
+{
+    return modbus_guard_try_begin_at(g, timeout_ms, __FILE__, __func__, __LINE__);
 }
 
 void modbus_guard_end(modbus_guard_t *g)
 {
-    if (g && g->locked && s_mb_req_mutex) {
-        xSemaphoreGiveRecursive(s_mb_req_mutex);
-        g->locked = false;
+    if (!g) {
+        return;
     }
+
+#if CONFIG_MODBUS_GUARD_DISABLE
+    if (g->locked) {
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+        TickType_t now = xTaskGetTickCount();
+        TickType_t delta = now - g->lock_ts;
+        uint32_t held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+        ESP_LOGI("MODBUS_GUARD",
+                 "UNLOCK(bypass) by %s:%d %s() held=%u ms",
+                 g->owner_file ? g->owner_file : "<null>",
+                 g->owner_line,
+                 g->owner_func ? g->owner_func : "<null>",
+                 (unsigned)held_ms);
+#endif
+        g->locked = false;
+        g->owner_task = NULL;
+        g->owner_file = NULL;
+        g->owner_func = NULL;
+        g->owner_line = 0;
+        g->lock_ts = 0;
+        modbus_guard_diag_clear();
+    }
+    return;
+#else
+    if (!g->locked) {
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+        ESP_LOGW("MODBUS_GUARD",
+                 "UNLOCK called while not locked by %s:%d %s()",
+                 g->owner_file ? g->owner_file : "<unknown>",
+                 g->owner_line,
+                 g->owner_func ? g->owner_func : "<unknown>");
+#endif
+        return;
+    }
+    if (!s_mb_req_mutex) {
+        return;
+    }
+
+    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+    TickType_t now = xTaskGetTickCount();
+    TickType_t delta = now - g->lock_ts;
+    uint32_t held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    xSemaphoreGiveRecursive(s_mb_req_mutex);
+    g->locked = false;
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    ESP_LOGI("MODBUS_GUARD",
+             "UNLOCK by %s:%d %s() task=%p held=%u ms",
+             g->owner_file ? g->owner_file : "<null>",
+             g->owner_line,
+             g->owner_func ? g->owner_func : "<null>",
+             (void*)caller,
+             (unsigned)held_ms);
+#endif
+    g->owner_task = NULL;
+    g->owner_file = NULL;
+    g->owner_func = NULL;
+    g->owner_line = 0;
+    g->lock_ts = 0;
+    modbus_guard_diag_clear();
+#endif
+}
+
+void modbus_guard_diag_snapshot(modbus_guard_diag_snapshot_t *out)
+{
+    if (!out) {
+        return;
+    }
+
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    portENTER_CRITICAL(&s_guard_diag_lock);
+    *out = s_guard_diag;
+    portEXIT_CRITICAL(&s_guard_diag_lock);
+#else
+    memset(out, 0, sizeof(*out));
+#endif
+}
+
+void modbus_guard_debug_dump(void)
+{
+#if CONFIG_MODBUS_GUARD_DIAGNOSTICS
+    modbus_guard_diag_snapshot_t snap = {0};
+    modbus_guard_diag_snapshot(&snap);
+    uint32_t held_ms = 0;
+    if (snap.locked) {
+        TickType_t now = xTaskGetTickCount();
+        TickType_t delta = now - snap.lock_ts;
+        held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    }
+    ESP_LOGI("MODBUS_GUARD",
+             "DUMP locked=%d owner=%p site=%s:%d %s() held=%u ms",
+             snap.locked ? 1 : 0,
+             (void*)snap.owner_task,
+             snap.owner_file ? snap.owner_file : "<none>",
+             snap.owner_line,
+             snap.owner_func ? snap.owner_func : "<none>",
+             (unsigned)held_ms);
+#else
+    ESP_LOGI("MODBUS_GUARD", "DUMP diagnostics disabled");
+#endif
+}
+
+void modbus_guard_force_end(void)
+{
+#if CONFIG_MODBUS_GUARD_DISABLE
+    ESP_LOGW("MODBUS_GUARD", "FORCE UNLOCK requested while guard disabled");
+    return;
+#else
+    if (!s_mb_req_mutex) {
+        ESP_LOGW("MODBUS_GUARD", "FORCE UNLOCK requested without mutex");
+        return;
+    }
+
+    modbus_guard_diag_snapshot_t snap = {0};
+    modbus_guard_diag_snapshot(&snap);
+    if (!snap.locked) {
+        ESP_LOGI("MODBUS_GUARD", "FORCE UNLOCK ignored: guard already free");
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    TickType_t delta = now - snap.lock_ts;
+    uint32_t held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+
+    ESP_LOGW("MODBUS_GUARD",
+             "FORCE UNLOCK owner=%p site=%s:%d %s() held=%u ms",
+             (void*)snap.owner_task,
+             snap.owner_file ? snap.owner_file : "<none>",
+             snap.owner_line,
+             snap.owner_func ? snap.owner_func : "<none>",
+             (unsigned)held_ms);
+
+    xSemaphoreGiveRecursive(s_mb_req_mutex);
+    modbus_guard_diag_clear();
+#endif
 }
 
 /* =================== Tarefa leitora interna (DESABILITADA) ===================
@@ -343,9 +582,13 @@ esp_err_t modbus_master_read_holding_registers(uint8_t slave_addr,
 // Em erro (ex.: timeout), retorna o último esp_err_t.
 esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
 {
+    ESP_LOGI("MODBUS_MASTER", "ping start: addr=%u", (unsigned)slave_addr);
     if (alive)   *alive = false;
     if (used_fc) *used_fc = 0x00;
-    if (slave_addr == 0 || slave_addr > 247) return ESP_ERR_INVALID_ARG;
+    if (slave_addr == 0 || slave_addr > 247) {
+        ESP_LOGI("MODBUS_MASTER", "ping invalid addr: %u", (unsigned)slave_addr);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     // Garante master UP (idempotente)
     if (!s_master_ready) {
@@ -374,16 +617,19 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
             req.command   = hint;
             req.reg_start = hint_regs[i];
 
+            ESP_LOGI("MODBUS_MASTER", "ping hint try: addr=%u fc=0x%02x reg=0x%04x", (unsigned)slave_addr, req.command, req.reg_start);
             esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
             if (err == ESP_ERR_INVALID_STATE) {
                 (void) modbus_master_init();
                 err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
             }
+            ESP_LOGI("MODBUS_MASTER", "ping hint result: addr=%u fc=0x%02x reg=0x%04x err=%s", (unsigned)slave_addr, req.command, req.reg_start, esp_err_to_name(err));
             if (err == ESP_OK) {
                 if (alive)   *alive   = true;
                 if (used_fc) *used_fc = req.command;
                 // reforça a dica
                 s_ping_fc_hint[slave_addr] = req.command;
+                ESP_LOGI("MODBUS_MASTER", "ping success (hint): addr=%u used_fc=0x%02x", (unsigned)slave_addr, req.command);
                 return ESP_OK;
             }
             last_err = err;
@@ -404,16 +650,19 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
         req.command   = tries[i].fc;
         req.reg_start = tries[i].reg;
 
+        ESP_LOGI("MODBUS_MASTER", "ping try: addr=%u fc=0x%02x reg=0x%04x", (unsigned)slave_addr, req.command, req.reg_start);
         esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
         if (err == ESP_ERR_INVALID_STATE) {
             (void) modbus_master_init();
             err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
         }
+        ESP_LOGI("MODBUS_MASTER", "ping result: addr=%u fc=0x%02x reg=0x%04x err=%s", (unsigned)slave_addr, req.command, req.reg_start, esp_err_to_name(err));
 
         if (err == ESP_OK) {
             if (alive)   *alive   = true;
             if (used_fc) *used_fc = req.command;
             s_ping_fc_hint[slave_addr] = req.command; // guarda dica para os próximos pings
+            ESP_LOGI("MODBUS_MASTER", "ping success: addr=%u used_fc=0x%02x", (unsigned)slave_addr, req.command);
             return ESP_OK;
         }
 
@@ -421,6 +670,7 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
     }
 
     // Ninguém respondeu
+    ESP_LOGI("MODBUS_MASTER", "ping failure: addr=%u last_err=%s", (unsigned)slave_addr, esp_err_to_name(last_err));
     return last_err; // tipicamente ESP_ERR_TIMEOUT
 }
 

@@ -67,7 +67,21 @@ config MODBUS_GUARD_ENABLE
     default y if MODBUS_SERIAL_ENABLE
     depends on MODBUS_SERIAL_ENABLE
     help
-	Proporciona acesso ordenado ao barramento (mutex, timeouts, backoff) no backend Serial.
+        Proporciona acesso ordenado ao barramento (mutex, timeouts, backoff) no backend Serial.
+
+config MODBUS_GUARD_DIAGNOSTICS
+    bool "Logs de diagnóstico do guard Modbus"
+    default n
+    depends on MODBUS_GUARD_ENABLE
+    help
+        Emite telemetria detalhada de LOCK/BUSY/UNLOCK, incluindo dono e tempo segurando o guard.
+
+config MODBUS_GUARD_DISABLE
+    bool "Desativar guard Modbus (apenas diagnóstico)"
+    default n
+    depends on MODBUS_GUARD_ENABLE
+    help
+        Ignora o mutex do guard para testes A/B. Use apenas temporariamente.
 
 endif  # MODBUS_BUILD_ENABLE
 
@@ -90,7 +104,13 @@ config FC_TRACE_INTERACTION
     bool "Traçar interações do front (factory console)"
     default n
     help
-	Emite logs de interações de UI (ex.: /ping, /config*) para diagnóstico.
+        Emite logs de interações de UI (ex.: /ping, /config*) para diagnóstico.
+
+config DEV_MODE
+    bool "Endpoints de diagnóstico (modo desenvolvedor)"
+    default n
+    help
+        Habilita endpoints perigosos como /rs485_guard_force_unlock. Use somente em laboratório.
 
 endmenu  # Energia & Debug
 

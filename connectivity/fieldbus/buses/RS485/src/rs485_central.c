@@ -5,11 +5,13 @@
  *      Author: geopo
  */
 
- #include "rs485_central.h"
- #include "rs485_registry.h"     // rs485_registry_read_all, rs485_measurement_t
- #include "rs485_sd_adapter.h"   // save_measurements_to_sd
- #include "esp_log.h"
- #include "modbus_rtu_master.h"
+#include <stdbool.h>
+
+#include "rs485_central.h"
+#include "rs485_registry.h"     // rs485_registry_read_all, rs485_measurement_t
+#include "rs485_sd_adapter.h"   // save_measurements_to_sd
+#include "esp_log.h"
+#include "modbus_rtu_master.h"
 
  #ifndef RS485_MAX_MEAS
  #define RS485_MAX_MEAS  64
@@ -33,13 +35,20 @@
         ESP_LOGI(TAG, "Nenhum sensor RS485 cadastrado.");
         return ESP_ERR_NOT_FOUND;
     }
-    
+
     /* Exclusividade do barramento durante a varredura. */
     modbus_guard_t g = {0};
+    bool guard_locked = false;
+    TickType_t lock_start = 0;
+    esp_err_t ret = ESP_OK;
     if (!modbus_guard_try_begin(&g, 120)) {
         ESP_LOGW("RS485_CENTRAL", "Barramento ocupado; adiando rodada.");
-        return ESP_ERR_TIMEOUT;
+        ret = ESP_ERR_TIMEOUT;
+        goto out;
     }
+    guard_locked = true;
+    lock_start = xTaskGetTickCount();
+    ESP_LOGI("RS485_CENTRAL", "CENTRAL LOCK count=%d", count);
 
   /*  // 2) dispatcher central: lê todos e retorna vetor heterogêneo de medições
     int n = rs485_poll_all(list, (size_t)count, meas, RS485_MAX_MEAS);
@@ -59,9 +68,8 @@
      }
      ESP_LOGI(TAG, "Centralizado: lidos=%d gravados=%d", n, w);
      return ESP_OK;*/
-     esp_err_t ret = ESP_OK;
-
     // 2) dispatcher central: lê todos e retorna vetor heterogêneo de medições
+    // Espera-se que rs485_poll_all execute cada dispositivo em ~80 ms; revise se exceder.
     int n = rs485_poll_all(list, (size_t)count, meas, RS485_MAX_MEAS);
     if (n < 0) {
         ESP_LOGW(TAG, "rs485_poll_all falhou (err=%d)", n);
@@ -84,11 +92,17 @@
     ret = ESP_OK;
 
 out:
-    modbus_guard_end(&g);
+    if (guard_locked) {
+        TickType_t held_ticks = xTaskGetTickCount() - lock_start;
+        uint32_t held_ms = (uint32_t)(held_ticks * portTICK_PERIOD_MS);
+        ESP_LOGI("RS485_CENTRAL", "CENTRAL UNLOCK count=%d held=%u ms", count, (unsigned)held_ms);
+        modbus_guard_end(&g);
+        guard_locked = false;
+    }
     return ret;
-     
-     
- }
+
+
+}
 
 
 

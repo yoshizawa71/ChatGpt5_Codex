@@ -45,6 +45,9 @@
 #include "rs485_registry.h"
 
 #include "sdkconfig.h"
+#ifndef CONFIG_DEV_MODE
+#define CONFIG_DEV_MODE 0
+#endif
 //========não é comentário===========
 #if CONFIG_REMOTE_MDNS
   #include "mdns.h"
@@ -166,6 +169,8 @@ static esp_err_t rs485_config_get_handler(httpd_req_t *req);
 static esp_err_t rs485_config_post_handler(httpd_req_t *req);
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req);
 static esp_err_t rs485_config_delete_handler(httpd_req_t *req);
+static esp_err_t rs485_guard_dump_get_handler(httpd_req_t *req);
+static esp_err_t rs485_guard_force_unlock_get_handler(httpd_req_t *req);
 
 //------------------------------------------------------------------
 
@@ -679,8 +684,8 @@ httpd_register_uri_handler(server, &rs485_register_post_uri);
         .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &rs485_ping_get_uri);
-    
-    
+
+
     // ---------------- RS485 CONFIG DELETE (GET) ----------------
 httpd_uri_t rs485_cfg_delete_uri = {
     .uri      = "/rs485ConfigDelete",
@@ -690,7 +695,25 @@ httpd_uri_t rs485_cfg_delete_uri = {
 };
 httpd_register_uri_handler(server, &rs485_cfg_delete_uri);
 
-#endif  
+    httpd_uri_t rs485_guard_dump_uri = {
+        .uri      = "/rs485_guard_dump",
+        .method   = HTTP_GET,
+        .handler  = rs485_guard_dump_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_guard_dump_uri);
+
+#if CONFIG_DEV_MODE
+    httpd_uri_t rs485_guard_force_unlock_uri = {
+        .uri      = "/rs485_guard_force_unlock",
+        .method   = HTTP_GET,
+        .handler  = rs485_guard_force_unlock_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_guard_force_unlock_uri);
+#endif
+
+#endif
 //----------------------------------------------------------
 //           Delete the file
 //----------------------------------------------------------
@@ -1571,30 +1594,40 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     static volatile bool s_global_inflight = false;
 
     char qbuf[64], param[16];
+    qbuf[0] = '\0';
     int addr = 0;
+    int channel = -1;
 //    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
     
         if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK)
+                channel = atoi(param);
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
             /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
             /* se quiser forçar um tipo no futuro, podemos usar req_type aqui */
         }
     }
-    
+
+    ESP_LOGI("RS485_PING", "start qlen=%d channel=%d address=%d query='%s'", qlen, channel, addr, qbuf);
+
     if (addr <= 0 || addr > 247) {
+        ESP_LOGI("RS485_PING", "invalid params: channel=%d address=%d", channel, addr);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
+        ESP_LOGI("RS485_PING", "reply (invalid): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
 
     // Se o AP estiver suspenso, responda sem acessar o barramento
     if (!wifi_ap_is_running()) {
+        ESP_LOGI("RS485_PING", "wifi ap suspended: channel=%d address=%d", channel, addr);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
+        ESP_LOGI("RS485_PING", "reply (ap_suspended): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"ap_suspended\"}");
         return ESP_OK;
     }
 
@@ -1603,20 +1636,28 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     // Circuit-breaker por backoff
     if (C->backoff_until && now_before(now, C->backoff_until)) {
+        ESP_LOGI("RS485_PING", "backoff active: channel=%d address=%d until=%u", channel, addr, (unsigned)C->backoff_until);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
+        ESP_LOGI("RS485_PING", "reply (backoff): {\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"backoff\"}");
         return ESP_OK;
     }
 
     // Rate limit por endereço e global
     if ((C->ts && (now - C->ts) < PER_ADDR_MIN) || (s_global_last && (now - s_global_last) < GLOBAL_MIN)) {
         // devolve cache
+        ESP_LOGI("RS485_PING", "rate-limited: channel=%d address=%d alive=%d fc=0x%02x", channel, addr, C->alive, C->fc);
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
+        if (json) {
+            ESP_LOGI("RS485_PING", "reply (cached): %s", json);
+        } else {
+            ESP_LOGI("RS485_PING", "reply (cached): {\"alive\":false}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
         free(json); cJSON_Delete(root);
@@ -1625,11 +1666,17 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
      if (C->inflight || s_global_inflight) {
+        ESP_LOGI("RS485_PING", "inflight cache: channel=%d address=%d alive=%d fc=0x%02x", channel, addr, C->alive, C->fc);
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
         char *json = cJSON_PrintUnformatted(root);
+        if (json) {
+            ESP_LOGI("RS485_PING", "reply (inflight): %s", json);
+        } else {
+            ESP_LOGI("RS485_PING", "reply (inflight): {\"alive\":false}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
         free(json); cJSON_Delete(root);
@@ -1660,42 +1707,66 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         }
     }*/
     
-    modbus_guard_t g = {0};  
-//    if (!modbus_guard_try_begin(&g, 10)) {
-		bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
+    modbus_guard_t g = {0};
+    bool guard_locked = false;
+    bool response_busy = false;
+    bool alive_response = C->alive;
+    uint8_t used_fc_response = C->fc;
+
+    ESP_LOGI("RS485_PING", "guard try begin: window=60ms channel=%d address=%d", channel, addr);
+    bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
+    ESP_LOGI("RS485_PING", "guard try result: channel=%d address=%d status=%s", channel, addr, got ? "ok" : "busy");
     if (!got) {
         // pequeno retry: dá uma chance de pegar o barramento entre leituras do central
+        ESP_LOGI("RS485_PING", "guard retry wait: channel=%d address=%d", channel, addr);
         vTaskDelay(pdMS_TO_TICKS(20));
+        ESP_LOGI("RS485_PING", "guard retry begin: window=40ms channel=%d address=%d", channel, addr);
         got = modbus_guard_try_begin(&g, 40);   // janela total até ~120 ms no pior caso
-         }
+        ESP_LOGI("RS485_PING", "guard retry result: channel=%d address=%d status=%s", channel, addr, got ? "ok" : "busy");
+    }
     if (!got) {
-		
         // Barramento ocupado -> devolve CACHE + busy=true
-        cJSON *root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "busy", true);
-        cJSON_AddBoolToObject(root, "alive", C->alive);
-        cJSON_AddNumberToObject(root, "used_fc", C->fc);
-        cJSON_AddBoolToObject(root, "exception", false);
-        char *json = cJSON_PrintUnformatted(root);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
-        free(json); cJSON_Delete(root);
-        C->inflight = false;
-        s_global_inflight = false;
-        return ESP_OK;
+        ESP_LOGI("RS485_PING", "guard busy -> respond busy: channel=%d address=%d", channel, addr);
+        modbus_guard_diag_snapshot_t snap = {0};
+        modbus_guard_diag_snapshot(&snap);
+        uint32_t held_ms = 0;
+        if (snap.locked) {
+            TickType_t now_ticks = xTaskGetTickCount();
+            TickType_t delta = now_ticks - snap.lock_ts;
+            held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+        }
+        ESP_LOGW("RS485_PING",
+                 "guard busy holder task=%p site=%s:%d %s() held=%u ms",
+                 (void*)snap.owner_task,
+                 snap.owner_file ? snap.owner_file : "<none>",
+                 snap.owner_line,
+                 snap.owner_func ? snap.owner_func : "<none>",
+                 (unsigned)held_ms);
+        modbus_guard_debug_dump();
+        response_busy = true;
+        goto respond;
     }
-    // Com o barramento exclusivo, faz a autodetecção curta
-    {
-        bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
-        alive = ok;
-        ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
-    }
-    // Libera o barramento ANTES de montar a resposta
-    modbus_guard_end(&g);
+    guard_locked = true;
 
-    C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
-    C->inflight = false;
-    s_global_inflight = false;
+    // Com o barramento exclusivo, faz a autodetecção curta
+    ESP_LOGI("RS485_PING", "registry probe begin: channel=%d address=%d", channel, addr);
+    bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
+    alive = ok;
+    ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
+    ESP_LOGI("RS485_PING", "registry probe result: alive=%d used_fc=0x%02x ret=%s", alive, used_fc, esp_err_to_name(ret));
+    alive_response = alive;
+    used_fc_response = used_fc;
+
+    // Libera o barramento ANTES de montar a resposta
+    ESP_LOGI("RS485_PING", "guard end (before release): channel=%d address=%d", channel, addr);
+    modbus_guard_end(&g);
+    guard_locked = false;
+    ESP_LOGI("RS485_PING", "guard released: channel=%d address=%d", channel, addr);
+
+    C->ts = xTaskGetTickCount();
+    C->alive = alive;
+    C->fc = used_fc;
+    C->err = ret;
 
     // Circuit-breaker simples: se falhar 5x seguidas, faz backoff de 3 s
     if (ret != ESP_OK || !alive) {
@@ -1708,15 +1779,135 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         C->backoff_until = 0;
     }
 
+respond:
+    if (guard_locked) {
+        ESP_LOGW("RS485_PING", "guard still locked at respond path, releasing: channel=%d address=%d", channel, addr);
+        modbus_guard_end(&g);
+        guard_locked = false;
+    }
+
+    C->inflight = false;
+    s_global_inflight = false;
+
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "alive", alive);
-    cJSON_AddNumberToObject(root, "used_fc", used_fc);
+    cJSON_AddBoolToObject(root, "alive", alive_response);
+    cJSON_AddNumberToObject(root, "used_fc", used_fc_response);
     cJSON_AddBoolToObject(root, "exception", false);
+    if (response_busy) {
+        cJSON_AddBoolToObject(root, "busy", true);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    if (json) {
+        ESP_LOGI("RS485_PING", "reply (%s): %s", response_busy ? "busy" : "final", json);
+    } else {
+        ESP_LOGI("RS485_PING", "reply (%s): {\"alive\":%s}",
+                 response_busy ? "busy" : "final",
+                 alive_response ? "true" : "false");
+    }
+    httpd_resp_set_type(req, "application/json");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+    } else if (response_busy) {
+        httpd_resp_sendstr(req, "{\"alive\":false,\"busy\":true}");
+    } else {
+        httpd_resp_sendstr(req, "{\"alive\":false}");
+    }
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t rs485_guard_dump_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+    modbus_guard_debug_dump();
+
+    modbus_guard_diag_snapshot_t snap = {0};
+    modbus_guard_diag_snapshot(&snap);
+    uint32_t held_ms = 0;
+    if (snap.locked) {
+        TickType_t now_ticks = xTaskGetTickCount();
+        TickType_t delta = now_ticks - snap.lock_ts;
+        held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no_mem");
+        return ESP_FAIL;
+    }
+    cJSON_AddBoolToObject(root, "locked", snap.locked);
+    cJSON_AddStringToObject(root, "owner_file", snap.owner_file ? snap.owner_file : "");
+    cJSON_AddStringToObject(root, "owner_func", snap.owner_func ? snap.owner_func : "");
+    cJSON_AddNumberToObject(root, "owner_line", snap.owner_line);
+    cJSON_AddNumberToObject(root, "held_ms", (double)held_ms);
+
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
-    free(json); cJSON_Delete(root);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        free(json);
+    } else {
+        httpd_resp_sendstr(req, "{\"locked\":false}");
+    }
+    cJSON_Delete(root);
     return ESP_OK;
+}
+
+static esp_err_t rs485_guard_force_unlock_get_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+#if CONFIG_DEV_MODE
+    modbus_guard_diag_snapshot_t before = {0};
+    modbus_guard_diag_snapshot(&before);
+    uint32_t held_ms = 0;
+    if (before.locked) {
+        TickType_t now_ticks = xTaskGetTickCount();
+        TickType_t delta = now_ticks - before.lock_ts;
+        held_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    }
+
+    bool forced = false;
+    if (before.locked && held_ms > 1500U) {
+        modbus_guard_force_end();
+        forced = true;
+    }
+
+    modbus_guard_diag_snapshot_t after = {0};
+    modbus_guard_diag_snapshot(&after);
+    uint32_t held_after_ms = 0;
+    if (after.locked) {
+        TickType_t now_ticks = xTaskGetTickCount();
+        TickType_t delta = now_ticks - after.lock_ts;
+        held_after_ms = (uint32_t)(delta * portTICK_PERIOD_MS);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no_mem");
+        return ESP_FAIL;
+    }
+    cJSON_AddBoolToObject(root, "forced", forced);
+    cJSON_AddNumberToObject(root, "before_held_ms", (double)held_ms);
+    cJSON_AddBoolToObject(root, "after_locked", after.locked);
+    cJSON_AddNumberToObject(root, "after_held_ms", (double)held_after_ms);
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        free(json);
+    } else {
+        httpd_resp_sendstr(req, "{\"forced\":false}");
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+#else
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"dev_mode_required\"}");
+    return ESP_OK;
+#endif
 }
 
 /* export: backend/config pode chamar para zerar um endereço específico */
