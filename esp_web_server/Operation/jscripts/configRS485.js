@@ -77,6 +77,119 @@ function updateSensorStatusList() {
   });
 }
 
+// ===== RS-485 Ping Helper (auto) =====
+const PING_DEBOUNCE_MS = 250;
+const BUSY_RETRY_MS    = 250;
+
+let pingTimer = null;
+let retryTimer = null;
+let lastPingAlive = false;
+let lastPingTarget = { channel: null, address: null };
+
+function setPingStatus(text) {
+  const $status = $('#rs485_status');
+  if ($status.length) $status.text(text || '');
+}
+
+function enableAddButton(enabled) {
+  const $btn = $('#addSensor');
+  if ($btn.length) $btn.prop('disabled', !enabled);
+}
+
+function readFormState() {
+  const chRaw = $('#channel_input').val();
+  const chParsed = Number.parseInt(chRaw, 10);
+  const addrRaw = $('#addr_input').val();
+  const addrParsed = parseAddr(addrRaw);
+  return {
+    channel : Number.isInteger(chParsed) ? chParsed : NaN,
+    address : Number.isInteger(addrParsed) ? addrParsed : NaN,
+    type    : String($('#type_input').val() || '').trim(),
+    subtype : String($('#subtype_input').val() || '').trim(),
+  };
+}
+
+function resetPingState(message) {
+  if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  lastPingAlive = false;
+  lastPingTarget = { channel: null, address: null };
+  enableAddButton(false);
+  if (typeof message === 'string') setPingStatus(message);
+}
+
+function schedulePing(delayMs) {
+  if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  enableAddButton(false);
+  lastPingAlive = false;
+  lastPingTarget = { channel: null, address: null };
+  const wait = typeof delayMs === 'number' ? Math.max(0, delayMs) : 0;
+  pingTimer = setTimeout(doPingOnce, wait);
+}
+
+function doPingOnce() {
+  pingTimer = null;
+  const form = readFormState();
+
+  enableAddButton(false);
+  lastPingAlive = false;
+
+  if (!Number.isInteger(form.channel) || form.channel <= 0 ||
+      !Number.isInteger(form.address) || form.address < 1 || form.address > 247) {
+    setPingStatus('Informe canal e endereço…');
+    return;
+  }
+
+  setPingStatus('Aguardando sensor…');
+  lastPingTarget = { channel: form.channel, address: form.address };
+
+  const url = `/rs485Ping?channel=${encodeURIComponent(form.channel)}&address=${encodeURIComponent(form.address)}`;
+  fetch(url, { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('HTTP error');
+      return res.json();
+    })
+    .then((data) => {
+      const current = readFormState();
+      if (current.channel !== form.channel || current.address !== form.address) {
+        return; // campos alterados durante o ping; ignora resultado antigo
+      }
+
+      if (data && data.busy) {
+        setPingStatus('Barramento ocupado, tentando…');
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          doPingOnce();
+        }, BUSY_RETRY_MS);
+        return;
+      }
+
+      if (data && data.alive) {
+        setPingStatus('Sensor detectado!');
+        enableAddButton(true);
+        lastPingAlive = true;
+      } else {
+        setPingStatus('Não detectado');
+        enableAddButton(false);
+        lastPingAlive = false;
+      }
+    })
+    .catch(() => {
+      const current = readFormState();
+      if (current.channel !== form.channel || current.address !== form.address) {
+        return;
+      }
+      setPingStatus('Falha no ping');
+      enableAddButton(false);
+      lastPingAlive = false;
+    });
+}
+
+function onPingRelevantChange() {
+  schedulePing(PING_DEBOUNCE_MS);
+}
+
 // ====== Formulário: adicionar sensor ======
 async function addSensorFromInputs() {
   if (sensorMap.length >= RS485_MAX_SENSORS) {
@@ -97,9 +210,10 @@ async function addSensorFromInputs() {
   if (sensorMap.some(s => s.channel === ch))  { alert('Canal já utilizado.');   return; }
   if (sensorMap.some(s => s.address === addr)) { alert('Endereço já utilizado.'); return; }
 
-  // Só permite salvar se o ping do topo estiver estável (verde)
-  if (!isTopPingStable()) {
-    alert('Aguardando detecção estável do sensor (indicador verde).');
+  if (!lastPingAlive ||
+      lastPingTarget.channel !== ch ||
+      lastPingTarget.address !== addr) {
+    alert('Aguardando detecção do sensor (status "Sensor detectado!").');
     return;
   }
 
@@ -135,115 +249,9 @@ async function addSensorFromInputs() {
   $('#type_input').val('');
   $('#subtype_input').val('').prop('disabled', true);
 
-  // Reinicia estado do ping do topo
-  resetTopPingState();
+  resetPingState('Aguardando sensor…');
+  schedulePing(PING_DEBOUNCE_MS);
 }
-
-// ====== NOVO: Monitor de ping com histérese no formulário ======
-const PING_INTERVAL_MS = 1500;   // menos carga
-const HIST_SIZE        = 5;
-const OK_FOR_FOUND     = 3;      // >=3 ok na janela => encontrado
-const FAIL_FOR_MISSING = 3;      // >=3 falhas => ausente
-
-let topPingHist = [];
-let topPingTimer = null;
-let topPingInFlight = false;     // evita concorrência
-
-function setTopLedState(cls, text) {
-  const $led = $('#pingLed');
-  if ($led.length) {
-    $led.removeClass('led--off led--yellow led--green led--red led-pulse').addClass(cls);
-    if (cls === 'led--green') $led.addClass('led-pulse'); // pulsa até salvar
-  }
-  if ($('#pingStatus').length) $('#pingStatus').text(text || '');
-}
-
-function setAddButton(enabled, textWhenEnabled, textWhenDisabled) {
-  const $b = $('#addSensor');
-  if (!$b.length) return;
-  $b.prop('disabled', !enabled);
-  if (enabled && textWhenEnabled)   $b.text(textWhenEnabled);
-  if (!enabled && textWhenDisabled) $b.text(textWhenDisabled);
-}
-
-function isInputsValidForPing() {
-  const ch = parseInt($('#channel_input').val(), 10);
-  const addr = parseAddr($('#addr_input').val());
-  return Number.isInteger(ch) && ch > 0 && Number.isInteger(addr) && addr >= 1 && addr <= 247;
-}
-
-function isTopPingStable() {
-  const ok = topPingHist.filter(Boolean).length;
-  return ok >= OK_FOR_FOUND;
-}
-
-function resetTopPingState() {
-  topPingHist = [];
-  setTopLedState('led--off', '');
-  setAddButton(false, '', 'Aguardando sensor…');
-}
-
-function updateTopUiByHistory() {
-  const ok = topPingHist.filter(Boolean).length;
-  const fail = topPingHist.length - ok;
-
-  if (!isInputsValidForPing()) {
-    resetTopPingState();
-    return;
-  }
-
-  if (ok >= OK_FOR_FOUND) {
-    setTopLedState('led--green', 'Sensor encontrado (não salvo)');
-    setAddButton(true, 'Adicionar sensor', '');
-  } else if (fail >= FAIL_FOR_MISSING) {
-    setTopLedState('led--red', 'Sem resposta');
-    setAddButton(false, '', 'Aguardando sensor…');
-  } else if (topPingHist.length > 0) {
-    setTopLedState('led--yellow', 'Procurando…');
-    setAddButton(false, '', 'Aguardando sensor…');
-  } else {
-    resetTopPingState();
-  }
-}
-
-function pushTopResult(ok) {
-  topPingHist.push(!!ok);
-  if (topPingHist.length > HIST_SIZE) topPingHist.shift();
-  updateTopUiByHistory();
-}
-
-async function topPingOnce() {
-  if (topPingInFlight) return;             // evita sobreposição
-  if (!isInputsValidForPing()) { resetTopPingState(); return; }
-  topPingInFlight = true;
-
-  const ch   = parseInt($('#channel_input').val(), 10);
-  const addr = parseAddr($('#addr_input').val());
-
-  try {
-    const r = await $.getJSON(`/rs485Ping?channel=${ch}&address=${addr}&ts=${Date.now()}`);
-    pushTopResult(r && r.alive === true);
-  } catch {
-    pushTopResult(false);
-  } finally {
-    topPingInFlight = false;
-  }
-}
-
-function startTopPingMonitor() {
-  if (topPingTimer) clearInterval(topPingTimer);
-  resetTopPingState();
-  topPingTimer = setInterval(topPingOnce, PING_INTERVAL_MS);
-}
-
-// Pausa quando a aba fica oculta (economiza CPU/RF)
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    if (topPingTimer) { clearInterval(topPingTimer); topPingTimer = null; }
-  } else {
-    startTopPingMonitor();
-  }
-});
 
 // ===== Eventos =====
 $(document).ready(function() {
@@ -281,9 +289,14 @@ $(document).ready(function() {
     })
     .fail(() => { /* ok se não existir */ });
 
-  // Inicia monitor de ping do formulário
-  $(document).on('change keyup', '#channel_input, #addr_input', startTopPingMonitor);
-  startTopPingMonitor();
+  // Auto ping inicial e reações do formulário
+  $('#channel_input').on('change', onPingRelevantChange);
+  $('#addr_input').on('input', onPingRelevantChange);
+  $('#type_input').on('change', onPingRelevantChange);
+  $('#subtype_input').on('change', onPingRelevantChange);
+
+  resetPingState('Aguardando sensor…');
+  schedulePing(200);
 });
 
 // Exponha utilitários se outros scripts precisarem
