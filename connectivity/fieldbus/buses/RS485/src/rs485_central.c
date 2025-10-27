@@ -10,6 +10,7 @@
  #include "rs485_sd_adapter.h"   // save_measurements_to_sd
  #include "esp_log.h"
  #include "modbus_rtu_master.h"
+ #include <stdbool.h>
 
  #ifndef RS485_MAX_MEAS
  #define RS485_MAX_MEAS  64
@@ -36,10 +37,12 @@
     
     /* Exclusividade do barramento durante a varredura. */
     modbus_guard_t g = {0};
+    bool guard_locked = false;
     if (!modbus_guard_try_begin(&g, 120)) {
         ESP_LOGW("RS485_CENTRAL", "Barramento ocupado; adiando rodada.");
         return ESP_ERR_TIMEOUT;
     }
+    guard_locked = true;
 
   /*  // 2) dispatcher central: lê todos e retorna vetor heterogêneo de medições
     int n = rs485_poll_all(list, (size_t)count, meas, RS485_MAX_MEAS);
@@ -74,6 +77,9 @@
         goto out;
     }
 
+    modbus_guard_end(&g);
+    guard_locked = false;
+
     int w = save_measurements_to_sd(meas, (size_t)n);
     if (w <= 0) {
         ESP_LOGW(TAG, "Nada gravado no SD (w=%d)", w);
@@ -84,7 +90,9 @@
     ret = ESP_OK;
 
 out:
-    modbus_guard_end(&g);
+    if (guard_locked) {
+        modbus_guard_end(&g);
+    }
     return ret;
      
      

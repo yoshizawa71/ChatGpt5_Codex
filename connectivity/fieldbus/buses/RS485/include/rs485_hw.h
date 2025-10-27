@@ -55,6 +55,9 @@ esp_err_t rs485_hw_init(const rs485_hw_cfg_t *cfg);
 esp_err_t rs485_hw_tx(const uint8_t *data, size_t len, TickType_t tmo);
 esp_err_t rs485_hw_rx(uint8_t *data, size_t max_len, size_t *out_len, TickType_t tmo);
 
+/* Seleciona canal físico do multiplexador RS-485 (quando disponível). */
+esp_err_t rs485_hw_select_channel(uint8_t channel);
+
 /* Inicializa com os padrões acima (conveniência) */
 esp_err_t rs485_hw_init_default(void);
 

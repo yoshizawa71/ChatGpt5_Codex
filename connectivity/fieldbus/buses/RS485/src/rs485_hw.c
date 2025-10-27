@@ -12,6 +12,7 @@
 
 static const char *TAG = "RS485_HW";
 static rs485_hw_cfg_t s_cfg;
+static uint8_t s_selected_channel = 0;
 
 static uart_word_length_t to_word_len(int bits) {
     return (bits == 7) ? UART_DATA_7_BITS : UART_DATA_8_BITS;
@@ -74,6 +75,19 @@ esp_err_t rs485_hw_rx(uint8_t *data, size_t max_len, size_t *out_len, TickType_t
     int r = uart_read_bytes(s_cfg.uart_num, data, max_len, tmo);
     if (r <= 0) return ESP_ERR_TIMEOUT;
     if (out_len) *out_len = (size_t)r;
+    return ESP_OK;
+}
+
+esp_err_t rs485_hw_select_channel(uint8_t channel)
+{
+    if (channel == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_selected_channel == channel) {
+        return ESP_OK;
+    }
+    ESP_LOGD(TAG, "Selecionando canal RS485: %u", (unsigned)channel);
+    s_selected_channel = channel;
     return ESP_OK;
 }
 

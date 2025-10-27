@@ -53,8 +53,7 @@
 
 #if CONFIG_MODBUS_SERIAL_ENABLE
   #include "modbus_rtu_master.h"
-  #include "rs485_manager.h"
-  #include "rs485_hw.h" 
+  #include "rs485_hw.h"
   #include "rs485_registry.h"
   #include "xy_md02_driver.h"  // temperature_rs485_probe()
   #include "energy_jsy_mk_333_driver.h"   // energy_rs485_probe()
@@ -1222,6 +1221,7 @@ static esp_err_t config_operation_post_handler(httpd_req_t *req)
 // 1) se existir RS485_MAP_UI_PATH (JSON), entrega-o (contém type/subtype);
 // 2) senão, carrega do binário e monta JSON com type/subtype vazios.
 #if CONFIG_MODBUS_SERIAL_ENABLE
+extern void rs485_ping_cache_invalidate(uint8_t addr);
 static esp_err_t rs485_config_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
@@ -1391,7 +1391,7 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         }
     }
 
-    // --- Itera itens recebidos e faz upsert + valida ping curto ---
+    // --- Itera itens recebidos, valida campos e faz upsert ---
     for (cJSON *it = arr->child; it; it = it->next) {
         cJSON *jch = cJSON_GetObjectItem(it, "channel");
         cJSON *jaddr = cJSON_GetObjectItem(it, "address");
@@ -1408,35 +1408,47 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         int ch = jch->valueint;
         int addr = jaddr->valueint;
         const char *ty = jtype->valuestring;
-        const char *st = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
- // [FIX] validação de faixa/campos     
-        if (ch <= 0 || addr < 1 || addr > 247 || ty == NULL || ty[0] == '\0') {
-           cJSON_Delete(root);
-           cJSON_Delete(ui_root);
-           httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 item");
-           return ESP_FAIL;
-           }
- //========++++++++==========        
+        const char *st_in = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
 
-ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'", ch, addr, ty, st);
-// --- Ping curto (best-effort): nunca bloquear o cadastro
-uint8_t used_fc = 0;
-bool exception = false;
-bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(200), &used_fc, &exception);
-if (alive) {
-    cJSON_AddNumberToObject(it, "used_fc", used_fc);
-    ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
-} else {
-    ESP_LOGW("RS485_REG_GLUE", "PING FAIL durante registro (addr=%d). Prosseguindo com cadastro.", addr);
-    // não retorna erro; a leitura periódica descobrirá FC/estado depois
-}
+        if (ch <= 0 || addr < 1 || addr > 247 || ty == NULL || ty[0] == '\0') {
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 item");
+            return ESP_FAIL;
+        }
+
+        rs485_type_t ty_enum = rs485_type_from_str(ty);
+        if (ty_enum == RS485_TYPE_INVALID) {
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid type");
+            return ESP_FAIL;
+        }
+
+        rs485_subtype_t st_enum = RS485_SUBTYPE_NONE;
+        if (st_in && st_in[0] != '\0') {
+            st_enum = rs485_subtype_from_str(st_in);
+            if (st_enum == RS485_SUBTYPE_NONE) {
+                cJSON_Delete(root);
+                cJSON_Delete(ui_root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid subtype");
+                return ESP_FAIL;
+            }
+        }
+
+        const char *ty_norm = rs485_type_to_str(ty_enum);
+        const char *st_norm = rs485_subtype_to_str(st_enum);
+
+        ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'",
+                 ch, addr, ty_norm, st_norm);
+
 
         // --- Upsert no binário (replace se já existir, senão append) ---
         sensor_map_t cand = {0};
         cand.channel = (uint8_t)ch;
         cand.address = (uint8_t)addr;
-        strncpy(cand.type, ty, sizeof(cand.type) - 1);
-        strncpy(cand.subtype, st, sizeof(cand.subtype) - 1);
+        strncpy(cand.type, ty_norm, sizeof(cand.type) - 1);
+        strncpy(cand.subtype, st_norm, sizeof(cand.subtype) - 1);
 
         bool replaced = false;
         // Substitua o seu ESP_LOGI atual por:
@@ -1460,6 +1472,8 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             map[count++] = cand;
         }
 
+        rs485_ping_cache_invalidate((uint8_t)addr);
+
         // --- Upsert também no JSON do front (RS485_MAP_UI_PATH) ---
         bool ui_replaced = false;
         for (cJSON *jt = ui_arr->child; jt; jt = jt->next) {
@@ -1468,17 +1482,9 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             if (cJSON_IsNumber(uch) && cJSON_IsNumber(uad) &&
                 uch->valueint == ch && uad->valueint == addr)
             {
-                // Atualiza type/subtype e, se conhecido, a FC usada no ping
-                cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(ty));
-                cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(st));
-                if (used_fc > 0) {
-                    cJSON *old_fc = cJSON_GetObjectItem(jt, "used_fc");
-                    if (cJSON_IsNumber(old_fc)) {
-                        old_fc->valuedouble = used_fc;
-                    } else {
-                        cJSON_AddNumberToObject(jt, "used_fc", used_fc);
-                    }
-                }
+                // Atualiza type/subtype com strings canonizadas
+                cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(ty_norm));
+                cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(st_norm));
                 ui_replaced = true;
                 break;
             }
@@ -1487,11 +1493,8 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             cJSON *newit = cJSON_CreateObject();
             cJSON_AddNumberToObject(newit, "channel", ch);
             cJSON_AddNumberToObject(newit, "address", addr);
-            cJSON_AddStringToObject(newit, "type", ty);
-            cJSON_AddStringToObject(newit, "subtype", st);
-            if (used_fc > 0) {
-                cJSON_AddNumberToObject(newit, "used_fc", used_fc);
-            }
+            cJSON_AddStringToObject(newit, "type", ty_norm);
+            cJSON_AddStringToObject(newit, "subtype", st_norm);
             cJSON_AddItemToArray(ui_arr, newit);
         }
     }
@@ -1572,13 +1575,25 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     char qbuf[64], param[16];
     int addr = 0;
+    int ch = 0;
+    bool channel_param_present = false;
+    bool channel_valid = false;
 //    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
     
         if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
-            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
+            if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK) {
                 addr = atoi(param);
+            }
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK) {
+                ch = atoi(param);
+                channel_param_present = true;
+            } else if (httpd_query_key_value(qbuf, "ch", param, sizeof(param)) == ESP_OK) {
+                ch = atoi(param);
+                channel_param_present = true;
+            }
+            channel_valid = channel_param_present && ch > 0;
             /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
             /* se quiser forçar um tipo no futuro, podemos usar req_type aqui */
         }
@@ -1613,9 +1628,13 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     if ((C->ts && (now - C->ts) < PER_ADDR_MIN) || (s_global_last && (now - s_global_last) < GLOBAL_MIN)) {
         // devolve cache
         cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "busy", false);
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+        if (channel_param_present) {
+            cJSON_AddNumberToObject(root, "channel", ch);
+        }
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
@@ -1626,14 +1645,26 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
      if (C->inflight || s_global_inflight) {
         cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "busy", false);
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+        if (channel_param_present) {
+            cJSON_AddNumberToObject(root, "channel", ch);
+        }
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
         free(json); cJSON_Delete(root);
         return ESP_OK;
+    }
+
+    if (channel_valid) {
+        esp_err_t sel_err = rs485_hw_select_channel((uint8_t)ch);
+        if (sel_err != ESP_OK) {
+            ESP_LOGW("RS485_REG_GLUE", "select_channel(%d) falhou: %s",
+                     ch, esp_err_to_name(sel_err));
+        }
     }
 
     C->inflight = true;
@@ -1676,6 +1707,9 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
         cJSON_AddBoolToObject(root, "exception", false);
+        if (channel_param_present) {
+            cJSON_AddNumberToObject(root, "channel", ch);
+        }
         char *json = cJSON_PrintUnformatted(root);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
@@ -1709,9 +1743,13 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     }
 
     cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "busy", false);
     cJSON_AddBoolToObject(root, "alive", alive);
     cJSON_AddNumberToObject(root, "used_fc", used_fc);
     cJSON_AddBoolToObject(root, "exception", false);
+    if (channel_param_present) {
+        cJSON_AddNumberToObject(root, "channel", ch);
+    }
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json ? json : "{\"alive\":false}");
