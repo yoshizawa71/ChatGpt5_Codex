@@ -25,6 +25,20 @@ static uart_stop_bits_t to_stop(int s) {
     return (s == 2) ? UART_STOP_BITS_2 : UART_STOP_BITS_1;
 }
 
+static int from_parity(uart_parity_t p)
+{
+    switch (p) {
+        case UART_PARITY_ODD:   return 1;
+        case UART_PARITY_EVEN:  return 2;
+        default:                return 0;
+    }
+}
+
+static int from_stop(uart_stop_bits_t s)
+{
+    return (s == UART_STOP_BITS_2) ? 2 : 1;
+}
+
 esp_err_t rs485_hw_init(const rs485_hw_cfg_t *cfg)
 {
     s_cfg = *cfg;
@@ -103,4 +117,27 @@ void rs485_hw_fill_defaults(rs485_hw_cfg_t *cfg)
 int rs485_hw_get_uart_num(void)
 {
     return s_cfg.uart_num; // 's_cfg' já guarda a cfg aplicada pelo init
+}
+
+esp_err_t rs485_apply_port_config(unsigned baud, uart_parity_t parity, uart_stop_bits_t stop)
+{
+    if (baud == 0) return ESP_ERR_INVALID_ARG;
+
+    uart_port_t port = (uart_port_t)s_cfg.uart_num;
+    ESP_RETURN_ON_ERROR(uart_set_baudrate(port, (int)baud), TAG, "set_baud");
+    ESP_RETURN_ON_ERROR(uart_set_parity(port, parity), TAG, "set_parity");
+    ESP_RETURN_ON_ERROR(uart_set_stop_bits(port, stop), TAG, "set_stop");
+
+    s_cfg.baudrate  = baud;
+    s_cfg.parity    = from_parity(parity);
+    s_cfg.stop_bits = from_stop(stop);
+
+    return ESP_OK;
+}
+
+void rs485_get_port_config(unsigned *baud, uart_parity_t *parity, uart_stop_bits_t *stop)
+{
+    if (baud)   *baud   = s_cfg.baudrate;
+    if (parity) *parity = to_parity(s_cfg.parity);
+    if (stop)   *stop   = to_stop(s_cfg.stop_bits);
 }

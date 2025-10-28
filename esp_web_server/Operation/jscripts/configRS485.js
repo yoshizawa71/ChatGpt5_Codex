@@ -136,7 +136,9 @@ function rs485RenderList(items) {
     $line.append($desc, $('<span>').append($icon, ' ', $remove));
     $list.append($line);
 
-    $.getJSON(`/rs485Ping?channel=${s.channel}&address=${s.address}&ts=${Date.now()}`)
+    const typeQS = encodeURIComponent(s.type || '');
+    const subtypeQS = encodeURIComponent(s.subtype || '');
+    $.getJSON(`/rs485Ping?channel=${s.channel}&address=${s.address}&type=${typeQS}&subtype=${subtypeQS}&ts=${Date.now()}`)
       .done(res => {
         $icon.toggleClass('connected', !!(res && res.alive))
              .toggleClass('disconnected', !(res && res.alive));
@@ -334,9 +336,13 @@ async function topPingOnce() {
 
   const ch   = parseInt($('#channel_input').val(), 10);
   const addr = parseAddr($('#addr_input').val());
+  const type = $('#type_input').val();
+  const subtype = $('#subtype_input').val();
 
   try {
-    const r = await $.getJSON(`/rs485Ping?channel=${ch}&address=${addr}&ts=${Date.now()}`);
+    const typeQS = encodeURIComponent(type || '');
+    const subtypeQS = encodeURIComponent(subtype || '');
+    const r = await $.getJSON(`/rs485Ping?channel=${ch}&address=${addr}&type=${typeQS}&subtype=${subtypeQS}&ts=${Date.now()}`);
     pushTopResult(r && r.alive === true);
   } catch {
     pushTopResult(false);

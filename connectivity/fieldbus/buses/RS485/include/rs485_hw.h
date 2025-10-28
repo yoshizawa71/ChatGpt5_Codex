@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "driver/uart.h"
 
 // Exija que tudo venha do menuconfig -----------------------------
 #ifndef CONFIG_RS485_UART_NUM
@@ -63,6 +64,28 @@ void rs485_hw_fill_defaults(rs485_hw_cfg_t *cfg);
 
 /* Opcional: expõe o UART configurado (útil para checagens) */
 int rs485_hw_get_uart_num(void);
+
+/* Ajuste dinâmico da porta UART já inicializada */
+esp_err_t rs485_apply_port_config(unsigned baud, uart_parity_t parity, uart_stop_bits_t stop);
+void      rs485_get_port_config(unsigned *baud, uart_parity_t *parity, uart_stop_bits_t *stop);
+
+typedef struct {
+    unsigned        baud;
+    uart_parity_t   parity;
+    uart_stop_bits_t stop;
+} rs485_port_cfg_t;
+
+static inline void rs485_port_cfg_capture(rs485_port_cfg_t *out)
+{
+    if (!out) return;
+    rs485_get_port_config(&out->baud, &out->parity, &out->stop);
+}
+
+static inline void rs485_port_cfg_restore(const rs485_port_cfg_t *in)
+{
+    if (!in) return;
+    (void)rs485_apply_port_config(in->baud, in->parity, in->stop);
+}
 
 
 #endif /* COMMUNICATIONS_RS485_INCLUDE_RS485_HW_H_ */

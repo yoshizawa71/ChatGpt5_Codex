@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "driver/uart.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,6 +68,13 @@ typedef struct {
     float             value;
 } rs485_measurement_t;
 
+typedef struct {
+    unsigned        baud;
+    uart_parity_t   parity;
+    uart_stop_bits_t stop;
+    uint32_t        timeout_ms;
+} rs485_profile_t;
+
 /* =========================
  * Mapas string ⇄ enum
  * ========================= */
@@ -103,6 +111,8 @@ bool rs485_registry_probe_any(uint8_t addr,
                               rs485_subtype_t *out_subtype,
                               uint8_t *out_used_fc,
                               const char **out_driver_name);
+
+bool rs485_get_fixed_profile(uint16_t type, uint16_t subtype, rs485_profile_t *out);
 
 #ifdef __cplusplus
 }

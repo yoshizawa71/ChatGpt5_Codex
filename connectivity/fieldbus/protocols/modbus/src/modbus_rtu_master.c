@@ -69,6 +69,8 @@
 #endif
 
 static const char *TAG = "MODBUS_MASTER";
+static uint32_t s_req_timeout_ms  = MB_REQ_TIMEOUT_MS;
+static uint32_t s_ping_timeout_ms = MB_PING_TIMEOUT_MS;
 
 /* Mutex para serializar o acesso ao barramento (drivers concorrentes, endpoints, etc.) */
 static SemaphoreHandle_t s_mb_req_mutex = NULL;
@@ -90,6 +92,34 @@ static inline esp_err_t mb_send_locked(mb_param_request_t *req,
     esp_err_t err = mbc_master_send_request(req, data_buf);
     if (s_mb_req_mutex) xSemaphoreGive(s_mb_req_mutex);
     return err;
+}
+
+void modbus_master_set_request_timeout(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0) {
+        s_req_timeout_ms = MB_REQ_TIMEOUT_MS;
+    } else {
+        s_req_timeout_ms = timeout_ms;
+    }
+}
+
+uint32_t modbus_master_get_request_timeout(void)
+{
+    return s_req_timeout_ms;
+}
+
+void modbus_master_set_ping_timeout(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0) {
+        s_ping_timeout_ms = MB_PING_TIMEOUT_MS;
+    } else {
+        s_ping_timeout_ms = timeout_ms;
+    }
+}
+
+uint32_t modbus_master_get_ping_timeout(void)
+{
+    return s_ping_timeout_ms;
 }
 
 static void modbus_uart_selftest(void) {
@@ -288,7 +318,7 @@ esp_err_t modbus_master_read_input_registers(uint8_t slave_addr,
         .reg_start  = reg_start,
         .reg_size   = words
     };
-    return mb_send_locked(&req, out_words, pdMS_TO_TICKS(MB_REQ_TIMEOUT_MS));
+    return mb_send_locked(&req, out_words, pdMS_TO_TICKS(s_req_timeout_ms));
 }
 
 esp_err_t modbus_master_read_holding_registers(uint8_t slave_addr,
@@ -305,7 +335,7 @@ esp_err_t modbus_master_read_holding_registers(uint8_t slave_addr,
         .reg_start  = reg_start,
         .reg_size   = words
     };
-    return mb_send_locked(&req, out_words, pdMS_TO_TICKS(MB_REQ_TIMEOUT_MS));
+    return mb_send_locked(&req, out_words, pdMS_TO_TICKS(s_req_timeout_ms));
 }
 
 /* =================== Ping canônico =================== */
@@ -348,10 +378,10 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
             req.command   = hint;
             req.reg_start = hint_regs[i];
 
-            esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
+            esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(s_ping_timeout_ms));
             if (err == ESP_ERR_INVALID_STATE) {
                 (void) modbus_master_init();
-                err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
+                err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(s_ping_timeout_ms));
             }
             if (err == ESP_OK) {
                 if (alive)   *alive   = true;
@@ -378,10 +408,10 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
         req.command   = tries[i].fc;
         req.reg_start = tries[i].reg;
 
-        esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
+        esp_err_t err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(s_ping_timeout_ms));
         if (err == ESP_ERR_INVALID_STATE) {
             (void) modbus_master_init();
-            err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(MB_PING_TIMEOUT_MS));
+            err = mb_send_locked(&req, &rx, pdMS_TO_TICKS(s_ping_timeout_ms));
         }
 
         if (err == ESP_OK) {

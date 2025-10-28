@@ -45,4 +45,9 @@ esp_err_t modbus_master_read_holding_registers(uint8_t slave_addr,
 /* -------- Ping canônico (para endpoints/manager) -------- */
 esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc);
 
+void     modbus_master_set_request_timeout(uint32_t timeout_ms);
+uint32_t modbus_master_get_request_timeout(void);
+void     modbus_master_set_ping_timeout(uint32_t timeout_ms);
+uint32_t modbus_master_get_ping_timeout(void);
+
 #endif /* CONNECTIVITY_FIELDBUS_PROTOCOLS_MODBUS_INCLUDE_MODBUS_RTU_MASTER_H_ */

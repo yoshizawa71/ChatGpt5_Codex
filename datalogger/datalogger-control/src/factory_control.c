@@ -52,10 +52,30 @@
 #if CONFIG_MODBUS_SERIAL_ENABLE
   #include "modbus_rtu_master.h"
   #include "rs485_manager.h"
-  #include "rs485_hw.h" 
+  #include "rs485_hw.h"
   #include "rs485_registry.h"
+  #include "rs485_registry_adapter.h"
   #include "xy_md02_driver.h"
 
+#endif
+
+#if CONFIG_MODBUS_SERIAL_ENABLE
+static const char *RS485_CFG_TAG = "RS485/CFG";
+
+static inline char rs485_ping_parity_letter(uart_parity_t p)
+{
+    switch (p) {
+        case UART_PARITY_EVEN:  return 'E';
+        case UART_PARITY_ODD:   return 'O';
+        case UART_PARITY_DISABLE:
+        default:                return 'N';
+    }
+}
+
+static inline int rs485_ping_stop_bits(uart_stop_bits_t s)
+{
+    return (s == UART_STOP_BITS_2) ? 2 : 1;
+}
 #endif
 
 
@@ -1565,13 +1585,21 @@ static volatile bool s_ping_busy = false;
 
     static TickType_t s_global_last = 0;
 
-    char qbuf[64], param[16];
+    char qbuf[128] = {0};
+    char param[16] = {0};
+    char type_param[32] = {0};
+    char subtype_param[32] = {0};
+    int ch = -1;
     int addr = 0;
     int qlen = httpd_req_get_url_query_len(req) + 1;
     if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
+            if (httpd_query_key_value(qbuf, "channel", param, sizeof(param)) == ESP_OK)
+                ch = atoi(param);
+            (void)httpd_query_key_value(qbuf, "type", type_param, sizeof(type_param));
+            (void)httpd_query_key_value(qbuf, "subtype", subtype_param, sizeof(subtype_param));
         }
     }
     if (addr <= 0 || addr > 247) {
@@ -1579,6 +1607,32 @@ static volatile bool s_ping_busy = false;
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
         return ESP_OK;
     }
+
+#if CONFIG_MODBUS_SERIAL_ENABLE
+    rs485_type_t    req_type    = rs485_type_from_str(type_param);
+    rs485_subtype_t req_subtype = rs485_subtype_from_str(subtype_param);
+
+    if ((req_type == RS485_TYPE_INVALID || req_subtype == RS485_SUBTYPE_NONE) && (ch > 0 || addr > 0)) {
+        rs485_sensor_t snapshot[RS485_MAX_SENSORS] = {0};
+        int snap = rs485_registry_get_snapshot(snapshot, RS485_MAX_SENSORS);
+        if (snap > 0) {
+            for (int i = 0; i < snap; ++i) {
+                bool match = false;
+                if (ch > 0 && snapshot[i].channel == (uint16_t)ch) match = true;
+                if (!match && snapshot[i].address == (uint8_t)addr) match = true;
+                if (match) {
+                    if (req_type == RS485_TYPE_INVALID)    req_type = snapshot[i].type;
+                    if (req_subtype == RS485_SUBTYPE_NONE) req_subtype = snapshot[i].subtype;
+                    break;
+                }
+            }
+        }
+    }
+#else
+    (void)ch;
+    (void)type_param;
+    (void)subtype_param;
+#endif
 
     // Se o AP estiver suspenso, responda sem acessar o barramento
     if (!wifi_ap_is_running()) {
@@ -1629,16 +1683,71 @@ static volatile bool s_ping_busy = false;
     C->inflight = true;
     s_global_last = now;
 
+#if CONFIG_MODBUS_SERIAL_ENABLE
+    rs485_profile_t req_profile = {0};
+    bool have_profile = rs485_get_fixed_profile(req_type, req_subtype, &req_profile);
+    struct {
+        bool applied;
+        rs485_port_cfg_t prev_port;
+        uint32_t prev_req;
+        uint32_t prev_ping;
+    } profile_guard = {0};
+
+    if (have_profile) {
+        profile_guard.prev_req  = modbus_master_get_request_timeout();
+        profile_guard.prev_ping = modbus_master_get_ping_timeout();
+        rs485_port_cfg_capture(&profile_guard.prev_port);
+
+        if (rs485_apply_port_config(req_profile.baud, req_profile.parity, req_profile.stop) == ESP_OK) {
+            modbus_master_set_request_timeout(req_profile.timeout_ms);
+            modbus_master_set_ping_timeout(req_profile.timeout_ms);
+            profile_guard.applied = true;
+
+            ESP_LOGI(RS485_CFG_TAG,
+                     "Ping: ch=%d addr=%d → %u baud parity=%c stop=%d timeout=%ums type=%s subtype=%s",
+                     ch,
+                     addr,
+                     req_profile.baud,
+                     rs485_ping_parity_letter(req_profile.parity),
+                     rs485_ping_stop_bits(req_profile.stop),
+                     req_profile.timeout_ms,
+                     rs485_type_to_str(req_type),
+                     rs485_subtype_to_str(req_subtype));
+        } else {
+            ESP_LOGW(RS485_CFG_TAG,
+                     "Ping: falha ao aplicar perfil (ch=%d addr=%d type=%s subtype=%s)",
+                     ch,
+                     addr,
+                     rs485_type_to_str(req_type),
+                     rs485_subtype_to_str(req_subtype));
+            have_profile = false;
+        }
+    }
+
+    uint32_t profile_timeout_ms = have_profile ? req_profile.timeout_ms : 300;
+#else
+    uint32_t profile_timeout_ms = 300;
+#endif
+
  //   (void) modbus_master_init();
 
 /*    bool alive = false; uint8_t used_fc = 0x00;
     esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario*/
-      
+
     bool alive = false; uint8_t used_fc = 0x00; esp_err_t ret = ESP_OK;
-    MB_SESSION_WITH(pdMS_TO_TICKS(300)) {
+    uint32_t session_wait_ms = profile_timeout_ms + 100;
+    MB_SESSION_WITH(pdMS_TO_TICKS(session_wait_ms)) {
         ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
-    }  
-      
+    }
+
+#if CONFIG_MODBUS_SERIAL_ENABLE
+    if (profile_guard.applied) {
+        modbus_master_set_request_timeout(profile_guard.prev_req);
+        modbus_master_set_ping_timeout(profile_guard.prev_ping);
+        rs485_port_cfg_restore(&profile_guard.prev_port);
+    }
+#endif
+
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
     C->inflight = false;
 

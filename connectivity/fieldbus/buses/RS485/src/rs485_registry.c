@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "driver/uart.h"
 #include "xy_md02_driver.h"              // temperature_rs485_probe/read  (XY-MD02)
 #include "energy_jsy_mk_333_driver.h"    // jsy_mk333_probe               (JSY-MK-333)
 
@@ -191,6 +192,37 @@ int rs485_poll_all(const rs485_sensor_t *list, size_t count,
         if (n > 0) wr += (size_t)n;
     }
     return (int)wr;
+}
+
+bool rs485_get_fixed_profile(uint16_t type, uint16_t subtype, rs485_profile_t *out)
+{
+    if (!out) return false;
+
+    switch ((rs485_type_t)type) {
+        case RS485_TYPE_ENERGIA:
+            out->baud       = 19200;
+            out->parity     = UART_PARITY_EVEN;
+            out->stop       = UART_STOP_BITS_1;
+            out->timeout_ms = 200;
+            return true;
+
+        case RS485_TYPE_TERMOHIGRO:
+        case RS485_TYPE_TEMPERATURA:
+        case RS485_TYPE_UMIDADE:
+            if ((rs485_subtype_t)subtype == RS485_SUBTYPE_XY_MD02 || subtype == RS485_SUBTYPE_NONE) {
+                out->baud       = 9600;
+                out->parity     = UART_PARITY_DISABLE;
+                out->stop       = UART_STOP_BITS_1;
+                out->timeout_ms = 700;
+                return true;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return false;
 }
 
 /* --------------- NOVO: Varredura de drivers em um endereço ---------------
