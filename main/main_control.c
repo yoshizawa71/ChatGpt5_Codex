@@ -43,8 +43,8 @@
 #include <lwip/netdb.h>
 #include "portal_state.h"
 #include "sdkconfig.h"
+
 #include "payload_time.h"
-#include "rs485_central.h"
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 
@@ -266,16 +266,24 @@ uint8_t result = SAVE_OK;
 // ---------------------------------------------------------------------
 static void save_sensor_data_rs485(void)
 {
-    // Leitura centralizada de TODOS os sensores cadastrados (qualquer tipo).
-    // Tempo orçado curto? ajuste o timeout_ms (ex.: 400~600 ms total).
-    esp_err_t e = rs485_central_poll_and_save(600);
+#if ENERGY_VALIDATE_FIXED
+    ESP_LOGI("RS485", "VALIDAÇÃO: ler CH=%d ADDR=%d (fixo)", ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
+    esp_err_t e = energy_meter_save_currents(ENERGY_FIX_CHANNEL, ENERGY_FIX_ADDRESS);
     if (e == ESP_OK) {
-        ESP_LOGI("RS485", "Central: dados salvos a partir do cadastro.");
-    } else if (e == ESP_ERR_NOT_FOUND) {
-        ESP_LOGW("RS485", "Nenhum sensor RS485 cadastrado/legível.");
+        ESP_LOGI("RS485", "VALIDAÇÃO: gravação OK (3.1/3.2/3.3)");
     } else {
-        ESP_LOGW("RS485", "Central: falha ao salvar: %s", esp_err_to_name(e));
+        ESP_LOGW("RS485", "VALIDAÇÃO: falha ao gravar (fixo): %s", esp_err_to_name(e));
     }
+#else
+    esp_err_t e = energy_meter_save_registered_currents();
+    if (e == ESP_OK) {
+        ESP_LOGI("RS485", "Energy: dados salvos a partir do cadastro.");
+    } else if (e == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW("RS485", "Nenhum medidor RS485 cadastrado.");
+    } else {
+        ESP_LOGW("RS485", "Falha ao salvar energia: %s", esp_err_to_name(e));
+    }
+#endif
 }
 
 

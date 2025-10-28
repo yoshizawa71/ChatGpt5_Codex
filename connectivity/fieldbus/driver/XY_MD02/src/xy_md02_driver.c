@@ -21,30 +21,26 @@ static const char *TAG = "XY_MD02";
 
 static bool try_fc(uint8_t fc, uint8_t addr, uint16_t reg, uint16_t *out)
 {
-/*	ESP_LOGI(TAG,"XY_MD02", "try_fc: Tentando addr=%d fc=0x%02X reg=0x%04X", addr, fc, reg);
-    esp_err_t err;*/
-    ESP_LOGI(TAG, "try_fc: Tentando addr=%d fc=0x%02X reg=0x%04X", addr, fc, reg);
-    modbus_guard_t g = {0};
-    /* 30 ms: se o barramento estiver ocupado pelo centralizador, aborta rápido */
-    if (!modbus_guard_try_begin(&g, 30)) {
-        ESP_LOGW(TAG, "busy: barramento em uso, pulando tentativa");
-        return false;
-    }
+	ESP_LOGI(TAG,"XY_MD02", "try_fc: Tentando addr=%d fc=0x%02X reg=0x%04X", addr, fc, reg);
     esp_err_t err;
+/*    if (fc == 0x04) {
+        return (modbus_master_read_input_registers(addr, reg, 1, out) == ESP_OK);
+    } else {
+        return (modbus_master_read_holding_registers(addr, reg, 1, out) == ESP_OK);
+    }*/
+    
     if (fc == 0x04) {
         err = modbus_master_read_input_registers(addr, reg, 1, out);
     } else {
         err = modbus_master_read_holding_registers(addr, reg, 1, out);
     }
     
-    modbus_guard_end(&g);
-    
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "try_fc sucesso: addr=%d fc=0x%02X reg=0x%04X value=0x%04X", addr, fc, reg, *out);
+        ESP_LOGI(TAG,"XY_MD02", "try_fc sucesso: addr=%d fc=0x%02X reg=0x%04X value=0x%04X", addr, fc, reg, *out);
         return true;
     } else {
-            ESP_LOGW(TAG, "try_fc falha: addr=%d fc=0x%02X reg=0x%04X erro=%s",
-                 addr, fc, reg, esp_err_to_name(err));
+        ESP_LOGW("XY_MD02", "try_fc falha: addr=%d fc=0x%02X reg=0x%04X erro=0x%x (timeout=%d)", 
+                 addr, fc, reg, err, err == ESP_ERR_TIMEOUT);
         return false;
     }
     

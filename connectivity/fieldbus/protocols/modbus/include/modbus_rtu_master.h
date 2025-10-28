@@ -9,8 +9,6 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "mbcontroller.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 
 /* -------- Modelagem (mantida) -------- */
 typedef struct {
@@ -26,16 +24,6 @@ typedef struct {
     uint16_t num_registers;
     void (*process_data)(uint8_t, const modbus_register_t*, const uint16_t*);
 } modbus_slave_t;
-
-/* Guard simples p/ exclusividade do barramento Modbus (RTU).
- * Use begin/try + end ao redor de qualquer transação.
- */
-typedef struct {
-    bool locked;
-} modbus_guard_t;
-
-bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms);
-void modbus_guard_end(modbus_guard_t *g);
 
 /* -------- Inicialização / tarefa leitora -------- */
 esp_err_t modbus_master_init(void);

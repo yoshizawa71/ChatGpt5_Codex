@@ -179,17 +179,6 @@ typedef struct {
     char     subtype[16];       // "monofasico"/"trifasico" ou ""
 } sensor_map_t;
 
-/* ---- RS485 Hints (config por endereço) ----------------------------- */
-typedef struct {
-    uint8_t  addr;       /* 1..247 */
-    uint8_t  used_fc;    /* 0=desconhecido; ex.: 3 ou 4 */
-    uint32_t baud;       /* 0=desconhecido; ex.: 9600, 19200 */
-    uint8_t  parity;     /* 0=N, 1=E, 2=O */
-    uint8_t  stopbits;   /* 1 ou 2 */
-    uint32_t last_ok_ms; /* opcional */
-    uint8_t  fail_count; /* para backoff */
-} rs485_hint_rec_t;
-
 // protótipos
 esp_err_t save_rs485_config(const sensor_map_t *map, size_t count);
 esp_err_t load_rs485_config(sensor_map_t *map, size_t *count);
@@ -197,25 +186,6 @@ esp_err_t load_rs485_config(sensor_map_t *map, size_t *count);
 esp_err_t rs485_hint_get_used_fc(uint8_t addr, uint8_t *out_fc);
 esp_err_t rs485_hint_set_used_fc(uint8_t addr, uint8_t used_fc);
 
-/* Carregar/salvar a TABELA completa (256 slots) */
-esp_err_t config_rs485_hints_load(rs485_hint_rec_t *tbl, size_t tbl_len);
-esp_err_t config_rs485_hints_save(const rs485_hint_rec_t *tbl, size_t tbl_len);
-
-/* Operações por endereço (usadas pelo restante do sistema) */
-bool      config_rs485_hint_get(uint8_t addr, rs485_hint_rec_t *out);
-esp_err_t config_rs485_hint_set(uint8_t addr, const rs485_hint_rec_t *in);
-esp_err_t config_rs485_hint_clear(uint8_t addr);
-void      config_rs485_hint_note_success(uint8_t addr, uint8_t used_fc,
-                                         uint32_t baud, uint8_t parity, uint8_t stopbits);
-void      config_rs485_hint_note_failure(uint8_t addr);
-
-/* Chame isso após persistir o novo cadastro RS485 (lista + count).
- * Ele faz a faxina: limpa hints/used_fc e invalida ping de endereços removidos. */
-void config_rs485_on_registry_saved(const sensor_map_t *list, int count);
-
-void rs485_ping_cache_invalidate(uint8_t addr);
-
-//=====================================================================
 struct system_config {
 //    uint32_t gsm_network_error_count;
 	uint16_t connection_gsm_network_error_count;

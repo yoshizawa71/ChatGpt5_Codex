@@ -7,7 +7,6 @@
 #include "datalogger_driver.h"
 #include <time.h>
 #include "esp_timer.h"
-#include "rs485_central.h"
 #include "sara_r422.h"
 #include "sleep_preparation.h"
 #include "tcp_log_server.h"
@@ -42,7 +41,6 @@
 #include "modbus_guard_session.h"
 #include <stdatomic.h>
 #include "portal_state.h"
-#include "rs485_registry.h"
 
 #include "sdkconfig.h"
 //========não é comentário===========
@@ -56,8 +54,7 @@
   #include "rs485_manager.h"
   #include "rs485_hw.h" 
   #include "rs485_registry.h"
-  #include "xy_md02_driver.h"  // temperature_rs485_probe()
-  #include "energy_jsy_mk_333_driver.h"   // energy_rs485_probe()
+  #include "xy_md02_driver.h"
 
 #endif
 
@@ -1511,12 +1508,6 @@ for (size_t i = 0; i < count; ++i) {
         return ret;
     }
     ESP_LOGI("RS485_REG_GLUE", "POST/SAVE: OK (count=%u)", (unsigned)count);
-       /* Dispara UMA leitura central curta para validar e já gravar no SD.
-       Mantemos orçamento pequeno para não travar o front. */
-    {
-        esp_err_t e = rs485_central_poll_and_save(500);
-        ESP_LOGI("RS485_REG_GLUE", "central after save: %s", esp_err_to_name(e));
-    } 
 
     // Persiste JSON do front (RS485_MAP_UI_PATH)
     // Mantemos isso aqui para que a lista renderizada no front
@@ -1562,28 +1553,22 @@ for (size_t i = 0; i < count; ++i) {
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
-//static volatile bool s_ping_busy = false;
+static volatile bool s_ping_busy = false;
 
-    const TickType_t PER_ADDR_MIN = pdMS_TO_TICKS(1200);  // era 300 ms
-    const TickType_t GLOBAL_MIN   = pdMS_TO_TICKS(300);   // simples amortecedor global
+    const TickType_t PER_ADDR_MIN = pdMS_TO_TICKS(700);   // era 300 ms
+    const TickType_t GLOBAL_MIN   = pdMS_TO_TICKS(150);   // simples amortecedor global
 
     static TickType_t s_global_last = 0;
-    static volatile bool s_global_inflight = false;
 
     char qbuf[64], param[16];
     int addr = 0;
-//    int type = -1;    // opcional: tipo do sensor vindo do front (energia, temp/umi, etc.)
     int qlen = httpd_req_get_url_query_len(req) + 1;
-    
-        if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
+    if (qlen > 1 && qlen < (int)sizeof(qbuf)) {
         if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
             if (httpd_query_key_value(qbuf, "address", param, sizeof(param)) == ESP_OK)
                 addr = atoi(param);
-            /* opcional: se vier "type=" mantemos a leitura por compat, mas o registry faz autodetecção */
-            /* se quiser forçar um tipo no futuro, podemos usar req_type aqui */
         }
     }
-    
     if (addr <= 0 || addr > 247) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"alive\":false,\"used_fc\":0,\"exception\":false,\"error\":\"invalid_address\"}");
@@ -1623,8 +1608,8 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    // Evita reentrância: se já tem ping em voo para esse endereço OU globalmente, devolve cache
-     if (C->inflight || s_global_inflight) {
+    // Evita reentrância: se já tem ping em voo para esse endereço, devolve cache
+    if (C->inflight) {
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "alive", C->alive);
         cJSON_AddNumberToObject(root, "used_fc", C->fc);
@@ -1638,70 +1623,25 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
 
     C->inflight = true;
     s_global_last = now;
-    s_global_inflight = true;
-    
-    bool alive = false; 
-    uint8_t used_fc = 0x00; 
-    esp_err_t ret = ESP_OK;
 
-        /* Autodetecção via REGISTRY: decide FC e tipo/subtipo batendo nos registradores corretos.
-       Mantemos fallback para o ping genérico para compatibilidade. */
-    rs485_type_t     det_type = RS485_TYPE_INVALID;
-    rs485_subtype_t  det_sub  = RS485_SUBTYPE_NONE;
-    const char      *det_name = NULL;
+ //   (void) modbus_master_init();
 
-/*    MB_SESSION_WITH(pdMS_TO_TICKS(200)) {
-        bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
-        alive = ok;
-        ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
-        if (!ok) {
-             fallback legado: ping genérico 
-            ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
-        }
-    }*/
-    
-    modbus_guard_t g = {0};  
-//    if (!modbus_guard_try_begin(&g, 10)) {
-		bool got = modbus_guard_try_begin(&g, 60);   // ↑ era 10 ms
-    if (!got) {
-        // pequeno retry: dá uma chance de pegar o barramento entre leituras do central
-        vTaskDelay(pdMS_TO_TICKS(20));
-        got = modbus_guard_try_begin(&g, 40);   // janela total até ~120 ms no pior caso
-         }
-    if (!got) {
-		
-        // Barramento ocupado -> devolve CACHE + busy=true
-        cJSON *root = cJSON_CreateObject();
-        cJSON_AddBoolToObject(root, "busy", true);
-        cJSON_AddBoolToObject(root, "alive", C->alive);
-        cJSON_AddNumberToObject(root, "used_fc", C->fc);
-        cJSON_AddBoolToObject(root, "exception", false);
-        char *json = cJSON_PrintUnformatted(root);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json ? json : "{\"alive\":false,\"busy\":true}");
-        free(json); cJSON_Delete(root);
-        C->inflight = false;
-        s_global_inflight = false;
-        return ESP_OK;
-    }
-    // Com o barramento exclusivo, faz a autodetecção curta
-    {
-        bool ok = rs485_registry_probe_any((uint8_t)addr, &det_type, &det_sub, &used_fc, &det_name);
-        alive = ok;
-        ret   = ok ? ESP_OK : ESP_ERR_TIMEOUT;
-    }
-    // Libera o barramento ANTES de montar a resposta
-    modbus_guard_end(&g);
-
+/*    bool alive = false; uint8_t used_fc = 0x00;
+    esp_err_t ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);//Temporario*/
+      
+    bool alive = false; uint8_t used_fc = 0x00; esp_err_t ret = ESP_OK;
+    MB_SESSION_WITH(pdMS_TO_TICKS(300)) {
+        ret = modbus_master_ping((uint8_t)addr, &alive, &used_fc);
+    }  
+      
     C->ts = xTaskGetTickCount(); C->alive = alive; C->fc = used_fc; C->err = ret;
     C->inflight = false;
-    s_global_inflight = false;
 
     // Circuit-breaker simples: se falhar 5x seguidas, faz backoff de 3 s
     if (ret != ESP_OK || !alive) {
         if (C->fails < 250) C->fails++;
-        if (C->fails >= 2) {
-            C->backoff_until = C->ts + pdMS_TO_TICKS(2000);
+        if (C->fails >= 5) {
+            C->backoff_until = C->ts + pdMS_TO_TICKS(3000);
         }
     } else {
         C->fails = 0;
@@ -1719,15 +1659,7 @@ static esp_err_t rs485_ping_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* export: backend/config pode chamar para zerar um endereço específico */
-void rs485_ping_cache_invalidate(uint8_t addr)
-{
-    /* endereços Modbus válidos: 1..247; índice 0 é reservado */
-    const size_t N = sizeof(s_ping2) / sizeof(s_ping2[0]);
-    size_t idx = (size_t)addr;
-    if (idx == 0 || idx >= N) return;
-    memset(&s_ping2[idx], 0, sizeof(s_ping2[idx]));
-}
+
 // ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====
 static esp_err_t rs485_config_delete_handler(httpd_req_t *req)
 {
@@ -1836,32 +1768,6 @@ for (size_t i = 0; i < wr; ++i) {
     
     ESP_LOGI("RS485_REG_GLUE", "DELETE OK: removed=%u remaining=%u",
          (unsigned)removed, (unsigned)wr);
-         
-      /* ---- FAXINA pós-remoção ----
-     *
-     * 1) Limpa HINTS (baud/paridade/stopbits/used_fc) do addr removido,
-     *    para não “vazar” autodetect antigo.
-     * 2) Invalida cache de PING para o addr (se exportado no backend).
-     * 3) (Opcional) Se quiser fazer a comparação completa “antes vs depois”
-     *    para múltiplos removidos, use config_rs485_on_registry_saved(out, wr).
-     */
-    if (removed > 0) {
-        /* Se um mesmo addr puder existir em múltiplos canais e você removeu apenas um,
-           e ainda há outro com o mesmo addr no vetor 'out', evite limpar o hint.
-           Aqui, como regra simples, limpamos somente se 'addr' não está mais presente. */
-        bool still_present = false;
-        for (size_t i = 0; i < wr; ++i) {
-            if (out[i].address == (uint8_t)addr) { still_present = true; break; }
-        }
-        if (!still_present) {
-            (void) config_rs485_hint_clear((uint8_t)addr);
-        }
-        /* Invalida o cache de ping para evitar retorno 'alive' do cache */
-        extern void rs485_ping_cache_invalidate(uint8_t addr); /* pode ser WEAK */
-        rs485_ping_cache_invalidate((uint8_t)addr);
-        /* Alternativa que cobre múltiplos removidos de uma vez:
-           config_rs485_on_registry_saved(out, (int)wr); */
-    }    
 
     // --- Resposta ---
     cJSON *resp = cJSON_CreateObject();

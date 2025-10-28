@@ -1,10 +1,8 @@
 
-set(srcs "src/rs485_central.c"
-         "src/rs485_hw.c"
+set(srcs "src/rs485_hw.c"
          "src/rs485_manager.c"
          "src/rs485_registry.c"
-         "src/rs485_registry_adapter.c"
-         "src/rs485_sd_adapter.c"
+         "src/rs485_registry_adapter.c"   
       )
 
 idf_component_register(SRCS "${srcs}"

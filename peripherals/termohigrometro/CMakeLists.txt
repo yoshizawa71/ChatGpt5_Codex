@@ -1,5 +1,6 @@
-set(srcs     "src/termohigro_meter.c"
-             )
+set(srcs     "src/temp_hum_simple.c"
+             "src/temperature_rs485.c"
+             "src/temperature_meter.c")
 
 idf_component_register(SRCS "${srcs}"
                     INCLUDE_DIRS "include"

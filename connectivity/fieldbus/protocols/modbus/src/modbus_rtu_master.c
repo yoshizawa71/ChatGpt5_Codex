@@ -62,10 +62,10 @@
 
 /* Timeouts internos padrão (ticks) */
 #ifndef MB_REQ_TIMEOUT_MS
-#define MB_REQ_TIMEOUT_MS  (150)
+#define MB_REQ_TIMEOUT_MS  (800)
 #endif
 #ifndef MB_PING_TIMEOUT_MS
-#define MB_PING_TIMEOUT_MS (120)
+#define MB_PING_TIMEOUT_MS (300)
 #endif
 
 static const char *TAG = "MODBUS_MASTER";
@@ -86,12 +86,9 @@ static inline esp_err_t mb_send_locked(mb_param_request_t *req,
                                        TickType_t tmo_ticks)
 {
     if (!req || !data_buf || req->reg_size == 0) return ESP_ERR_INVALID_ARG;
-    
-  //  if (s_mb_req_mutex) xSemaphoreTake(s_mb_req_mutex, tmo_ticks);
-    if (s_mb_req_mutex) xSemaphoreTakeRecursive(s_mb_req_mutex, tmo_ticks);
+    if (s_mb_req_mutex) xSemaphoreTake(s_mb_req_mutex, tmo_ticks);
     esp_err_t err = mbc_master_send_request(req, data_buf);
-  //  if (s_mb_req_mutex) xSemaphoreGive(s_mb_req_mutex);
-    if (s_mb_req_mutex) xSemaphoreGiveRecursive(s_mb_req_mutex);
+    if (s_mb_req_mutex) xSemaphoreGive(s_mb_req_mutex);
     return err;
 }
 
@@ -199,13 +196,10 @@ esp_err_t modbus_master_init(void)
 
     logmux_notify_rs485_active((uart_port_t)MB_PORT_NUM, true);
   
-/*if (!s_mb_req_mutex) {
-    s_mb_req_mutex = xSemaphoreCreateMutex();*/
+if (!s_mb_req_mutex) {
+    s_mb_req_mutex = xSemaphoreCreateMutex();
     if (!s_mb_req_mutex) {
-        s_mb_req_mutex = xSemaphoreCreateRecursiveMutex();
-    if (!s_mb_req_mutex) {
-//        ESP_LOGE(TAG, "xSemaphoreCreateMutex() NO MEM");
-        ESP_LOGE(TAG, "xSemaphoreCreateRecursiveMutex() NO MEM");
+        ESP_LOGE(TAG, "xSemaphoreCreateMutex() NO MEM");
         // rollback seguro:
         logmux_notify_rs485_active((uart_port_t)MB_PORT_NUM, false);
         (void) mbc_master_destroy();
@@ -235,7 +229,7 @@ esp_err_t modbus_master_deinit(void)
 
     // 1) Bloqueia o barramento e impede novas requisições
     if (s_mb_req_mutex) {
-        xSemaphoreTakeRecursive(s_mb_req_mutex, portMAX_DELAY);
+        xSemaphoreTake(s_mb_req_mutex, portMAX_DELAY);
     }
     s_master_ready = false;  // wrappers passam a retornar INVALID_STATE
 
@@ -256,7 +250,7 @@ esp_err_t modbus_master_deinit(void)
     
     // 4) Libera e destrói o mutex
     if (s_mb_req_mutex) {
-        xSemaphoreGiveRecursive(s_mb_req_mutex);
+        xSemaphoreGive(s_mb_req_mutex);
         vSemaphoreDelete(s_mb_req_mutex);
         s_mb_req_mutex = NULL;
     }
@@ -268,27 +262,7 @@ esp_err_t modbus_master_deinit(void)
     return ESP_OK;
 }
 
-/* =================== Guard público (usa o MESMO mutex) =================== */
-bool modbus_guard_try_begin(modbus_guard_t *g, TickType_t timeout_ms)
-{
-    if (!g) return false;
-    g->locked = false;
-    if (!s_mb_req_mutex) return false;
-    if (xSemaphoreTakeRecursive(s_mb_req_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
-        g->locked = true;
-        return true;
-    }
-    ESP_LOGW("MB/SESS", "timeout aguardando exclusividade do Modbus");
-    return false;
-}
 
-void modbus_guard_end(modbus_guard_t *g)
-{
-    if (g && g->locked && s_mb_req_mutex) {
-        xSemaphoreGiveRecursive(s_mb_req_mutex);
-        g->locked = false;
-    }
-}
 
 /* =================== Tarefa leitora interna (DESABILITADA) ===================
  * Para manter o módulo 100% desacoplado de "slaves", não criamos nenhuma task aqui.
@@ -423,6 +397,4 @@ esp_err_t modbus_master_ping(uint8_t slave_addr, bool *alive, uint8_t *used_fc)
     // Ninguém respondeu
     return last_err; // tipicamente ESP_ERR_TIMEOUT
 }
-
-
 
