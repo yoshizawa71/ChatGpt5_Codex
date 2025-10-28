@@ -1331,11 +1331,12 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
         }
     }
     // [FIX] Rejeitar lista vazia — evita sobrescrever com nada
-       if (cJSON_GetArraySize(arr) == 0) {
-           cJSON_Delete(root);
-           httpd_resp_set_type(req, "application/json");
-           httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"empty_sensor_list\"}");
-           return ESP_OK;
+    if (cJSON_GetArraySize(arr) == 0) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"empty_sensor_list\"}");
+        return ESP_FAIL;
     }
 
     // Carrega a config atual para fazermos "upsert"

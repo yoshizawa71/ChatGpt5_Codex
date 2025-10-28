@@ -22,6 +22,24 @@ function submit_form(form) {
             
             // === pega o mapeamento RS-485 do configRS485.js ===
             const sensors = gatherSensorMap();   // <- AQUI você chama
+            if (typeof rs485CollectFormSensor === 'function') {
+                const pending = rs485CollectFormSensor();
+                if (pending) {
+                    const channelBusy = sensors.some(s => s.channel === pending.channel);
+                    const addressBusy = sensors.some(s => s.address === pending.address);
+                    const maxSensors = (typeof window !== 'undefined' && typeof window.RS485_MAX_SENSORS === 'number')
+                        ? window.RS485_MAX_SENSORS
+                        : null;
+                    if ((maxSensors === null || sensors.length < maxSensors) && !channelBusy && !addressBusy) {
+                        sensors.push(pending);
+                    }
+                }
+            }
+
+            if (!sensors.length) {
+                alert('Nenhum sensor RS-485 informado. Adicione um sensor antes de gravar.');
+                return;
+            }
            
                        // 1) Salva configuração geral
             $.ajax({
@@ -40,15 +58,46 @@ function submit_form(form) {
                         processData: false,
                         type: 'POST',
                         url: '/rs485ConfigSave',
-                        success: function () {
+                        success: function (respText) {
+                            let payload = {};
+                            try {
+                                payload = respText ? JSON.parse(respText) : {};
+                            } catch (e) {
+                                payload = {};
+                            }
+
+                            if (!payload || payload.ok !== true) {
+                                const msg = (payload && payload.error) ? payload.error : 'Falha ao gravar mapeamento RS-485.';
+                                console.log('Falha ao gravar RS-485:', msg);
+                                alert(msg);
+                                if (typeof rs485FetchAndRender === 'function') {
+                                    rs485FetchAndRender();
+                                }
+                                return;
+                            }
+
                             if (typeof rs485FetchAndRender === 'function') {
                                 rs485FetchAndRender();
                             }
                             alert("Gravação Concluída");
                         },
-                        error: function () {
-                            console.log("Falha ao gravar RS-485");
-                            alert("Falha ao gravar mapeamento RS-485.");
+                        error: function (jqXHR) {
+                            let msg = 'Falha ao gravar mapeamento RS-485.';
+                            if (jqXHR && jqXHR.responseText) {
+                                try {
+                                    const parsed = JSON.parse(jqXHR.responseText);
+                                    if (parsed && parsed.error) {
+                                        msg = parsed.error;
+                                    }
+                                } catch (e) {
+                                    msg = jqXHR.responseText;
+                                }
+                            }
+                            console.log("Falha ao gravar RS-485:", msg);
+                            alert(msg);
+                            if (typeof rs485FetchAndRender === 'function') {
+                                rs485FetchAndRender();
+                            }
                         }
                     });
                 },

@@ -30,6 +30,27 @@ function gatherSensorMap() {
   return sensorMap.slice().sort((a, b) => a.channel - b.channel);
 }
 
+function collectCurrentFormSensor() {
+  const ch = parseInt($('#channel_input').val(), 10);
+  const addr = parseAddr($('#addr_input').val());
+  const type = $('#type_input').val();
+  const subtype = $('#subtype_input').val();
+
+  if (!Number.isInteger(ch) || ch <= 0) return null;
+  if (!Number.isInteger(addr) || addr < 1 || addr > 247) return null;
+  if (!type) return null;
+
+  const subtypeOpts = SUBTYPE_OPTIONS[type] || [];
+  if (subtypeOpts.length && !subtype) return null;
+
+  return {
+    channel: ch,
+    address: addr,
+    type,
+    subtype: subtype || ''
+  };
+}
+
 function refreshChannelOptions() {
   const used = new Set(sensorMap.map(s => s.channel));
   const $sel = $('#channel_input');
@@ -363,3 +384,5 @@ $(document).ready(function() {
 window.rs485RefreshList = updateSensorStatusList;
 window.gatherSensorMap = gatherSensorMap;
 window.rs485FetchAndRender = rs485FetchAndRender;
+window.rs485CollectFormSensor = collectCurrentFormSensor;
+window.RS485_MAX_SENSORS = RS485_MAX_SENSORS;
