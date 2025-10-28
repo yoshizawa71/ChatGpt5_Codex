@@ -38,7 +38,12 @@ rs485_type_t rs485_type_from_str(const char *s) {
     if (streq_ci(s, "termohigrometro") ||
         streq_ci(s, "termo-higrometro") ||
         streq_ci(s, "termohigrômetro") ||
-        streq_ci(s, "termo-higrômetro"))    return RS485_TYPE_TERMOHIGRO;
+        streq_ci(s, "termo-higrômetro") ||
+        streq_ci(s, "termohigrometer") ||
+        streq_ci(s, "t_h") ||
+        streq_ci(s, "th") ||
+        streq_ci(s, "temp_hum") ||
+        streq_ci(s, "temp-hum"))            return RS485_TYPE_TERMOHIGRO;
 
     if (streq_ci(s, "temperatura"))         return RS485_TYPE_TEMPERATURA;
     if (streq_ci(s, "umidade"))             return RS485_TYPE_UMIDADE;
@@ -82,6 +87,9 @@ rs485_subtype_t rs485_subtype_from_str(const char *s) {
     if (!s) return RS485_SUBTYPE_NONE;
     if (streq_ci(s, "monofasico") || streq_ci(s, "monofásico")) return RS485_SUBTYPE_MONOFASICO;
     if (streq_ci(s, "trifasico")  || streq_ci(s, "trifásico"))  return RS485_SUBTYPE_TRIFASICO;
+    if (streq_ci(s, "xy_md02")    ||
+        streq_ci(s, "xy-md02")   ||
+        streq_ci(s, "xymd02"))     return RS485_SUBTYPE_XY_MD02;
     return RS485_SUBTYPE_NONE;
 }
 
@@ -89,6 +97,7 @@ const char* rs485_subtype_to_str(rs485_subtype_t st) {
     switch (st) {
         case RS485_SUBTYPE_MONOFASICO: return "monofasico";
         case RS485_SUBTYPE_TRIFASICO:  return "trifasico";
+        case RS485_SUBTYPE_XY_MD02:    return "xy_md02";
         default: return "";
     }
 }

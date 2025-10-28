@@ -35,7 +35,8 @@ typedef enum {
 typedef enum {
     RS485_SUBTYPE_NONE = 0,
     RS485_SUBTYPE_MONOFASICO,
-    RS485_SUBTYPE_TRIFASICO
+    RS485_SUBTYPE_TRIFASICO,
+    RS485_SUBTYPE_XY_MD02
 } rs485_subtype_t;
 
 /* Medições publicadas pelo barramento (adicione conforme precisar) */

@@ -1394,42 +1394,49 @@ static esp_err_t rs485_config_post_handler(httpd_req_t *req)
 
         int ch = jch->valueint;
         int addr = jaddr->valueint;
-        const char *ty = jtype->valuestring;
+        const char *ty = jtype->valuestring ? jtype->valuestring : "";
         const char *st = (jsub && cJSON_IsString(jsub)) ? jsub->valuestring : "";
- // [FIX] validação de faixa/campos     
-        if (ch <= 0 || addr < 1 || addr > 247 || ty == NULL || ty[0] == '\0') {
-           cJSON_Delete(root);
-           cJSON_Delete(ui_root);
-           httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 item");
-           return ESP_FAIL;
-           }
- //========++++++++==========        
 
-ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'", ch, addr, ty, st);
-// --- Ping curto (best-effort): nunca bloquear o cadastro
-uint8_t used_fc = 0;
-bool exception = false;
-bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(200), &used_fc, &exception);
-if (alive) {
-    cJSON_AddNumberToObject(it, "used_fc", used_fc);
-    ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
-} else {
-    ESP_LOGW("RS485_REG_GLUE", "PING FAIL durante registro (addr=%d). Prosseguindo com cadastro.", addr);
-    // não retorna erro; a leitura periódica descobrirá FC/estado depois
-}
+        if (ch <= 0 || addr < 1 || addr > 247 || ty[0] == '\0') {
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 item");
+            return ESP_FAIL;
+        }
+
+        rs485_type_t type_enum = rs485_type_from_str(ty);
+        if (type_enum == RS485_TYPE_INVALID) {
+            cJSON_Delete(root);
+            cJSON_Delete(ui_root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid rs485 type");
+            return ESP_FAIL;
+        }
+        rs485_subtype_t subtype_enum = rs485_subtype_from_str(st);
+        const char *type_canon = rs485_type_to_str(type_enum);
+        const char *subtype_canon = rs485_subtype_to_str(subtype_enum);
+
+        ESP_LOGI("RS485_REG_GLUE", "RECV: ch=%d addr=%d type='%s' subtype='%s'", ch, addr, ty, st);
+
+        // --- Ping curto (best-effort): nunca bloquear o cadastro
+        uint8_t used_fc = 0;
+        bool exception = false;
+        bool alive = rs485_manager_ping((uint8_t)addr, pdMS_TO_TICKS(200), &used_fc, &exception);
+        if (alive) {
+            cJSON_AddNumberToObject(it, "used_fc", used_fc);
+            ESP_LOGI("RS485_REG_GLUE", "PING OK: addr=%d used_fc=%u", addr, (unsigned)used_fc);
+        } else {
+            ESP_LOGW("RS485_REG_GLUE", "PING FAIL durante registro (addr=%d). Prosseguindo com cadastro.", addr);
+            // não retorna erro; a leitura periódica descobrirá FC/estado depois
+        }
 
         // --- Upsert no binário (replace se já existir, senão append) ---
         sensor_map_t cand = {0};
         cand.channel = (uint8_t)ch;
         cand.address = (uint8_t)addr;
-        strncpy(cand.type, ty, sizeof(cand.type) - 1);
-        strncpy(cand.subtype, st, sizeof(cand.subtype) - 1);
+        strncpy(cand.type, type_canon, sizeof(cand.type) - 1);
+        strncpy(cand.subtype, subtype_canon, sizeof(cand.subtype) - 1);
 
         bool replaced = false;
-        // Substitua o seu ESP_LOGI atual por:
-ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replaced=%s)",
-         cand.channel, cand.address, cand.type, cand.subtype, replaced ? "yes" : "no");
-
         for (size_t i = 0; i < count; ++i) {
             if (map[i].channel == cand.channel && map[i].address == cand.address) {
                 map[i] = cand;
@@ -1446,6 +1453,13 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             }
             map[count++] = cand;
         }
+        ESP_LOGI("RS485_REG_GLUE",
+                 "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replaced=%s)",
+                 cand.channel,
+                 cand.address,
+                 cand.type,
+                 cand.subtype,
+                 replaced ? "yes" : "no");
 
         // --- Upsert também no JSON do front (RS485_MAP_UI_PATH) ---
         bool ui_replaced = false;
@@ -1456,8 +1470,8 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
                 uch->valueint == ch && uad->valueint == addr)
             {
                 // Atualiza type/subtype e, se conhecido, a FC usada no ping
-                cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(ty));
-                cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(st));
+                cJSON_ReplaceItemInObject(jt, "type",    cJSON_CreateString(type_canon));
+                cJSON_ReplaceItemInObject(jt, "subtype", cJSON_CreateString(subtype_canon));
                 if (used_fc > 0) {
                     cJSON *old_fc = cJSON_GetObjectItem(jt, "used_fc");
                     if (cJSON_IsNumber(old_fc)) {
@@ -1474,8 +1488,8 @@ ESP_LOGI("RS485_REG_GLUE", "UPSERT: ch=%u addr=%u type='%s' subtype='%s' (replac
             cJSON *newit = cJSON_CreateObject();
             cJSON_AddNumberToObject(newit, "channel", ch);
             cJSON_AddNumberToObject(newit, "address", addr);
-            cJSON_AddStringToObject(newit, "type", ty);
-            cJSON_AddStringToObject(newit, "subtype", st);
+            cJSON_AddStringToObject(newit, "type", type_canon);
+            cJSON_AddStringToObject(newit, "subtype", subtype_canon);
             if (used_fc > 0) {
                 cJSON_AddNumberToObject(newit, "used_fc", used_fc);
             }

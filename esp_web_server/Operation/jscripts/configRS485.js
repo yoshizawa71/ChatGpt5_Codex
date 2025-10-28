@@ -4,6 +4,15 @@
 // ===== Config =====
 const RS485_MAX_SENSORS = 10;
 const CHANNEL_OPTIONS = [3,4,5,6,7,8,9,10,11,12]; // ajuste conforme seu hardware
+const SUBTYPE_OPTIONS = {
+  energia: [
+    { value: 'monofasico', label: 'Monofásico' },
+    { value: 'trifasico',  label: 'Trifásico' }
+  ],
+  termohigrometro: [
+    { value: 'xy_md02', label: 'XY-MD02' }
+  ]
+};
 
 // ===== Estado =====
 const sensorMap = []; // { channel, address, type, subtype }
@@ -30,6 +39,34 @@ function refreshChannelOptions() {
     const disabled = used.has(ch) ? 'disabled' : '';
     $sel.append(`<option value="${ch}" ${disabled}>${ch}</option>`);
   });
+}
+
+function populateSubtypeOptions(type, preserveValue) {
+  const $sub = $('#subtype_input');
+  const opts = SUBTYPE_OPTIONS[type] || [];
+  const prev = preserveValue !== undefined ? preserveValue : $sub.val();
+
+  $sub.empty();
+  $sub.append('<option value="">—</option>');
+
+  opts.forEach((item) => {
+    $sub.append(`<option value="${item.value}">${item.label}</option>`);
+  });
+
+  if (!opts.length) {
+    $sub.val('');
+    $sub.prop('disabled', true);
+    return;
+  }
+
+  $sub.prop('disabled', false);
+  if (prev && opts.some(o => o.value === prev)) {
+    $sub.val(prev);
+  } else if (opts.length === 1) {
+    $sub.val(opts[0].value);
+  } else {
+    $sub.val('');
+  }
 }
 
 async function deleteSensorBackend(ch, addr) {
@@ -142,7 +179,11 @@ async function addSensorFromInputs() {
   if (!ch) { alert('Selecione o canal.'); return; }
   if (!Number.isInteger(addr) || addr < 1 || addr > 247) { alert('Endereço inválido (1..247).'); return; }
   if (!type) { alert('Selecione o tipo.'); return; }
-  if (type !== 'energia') { $('#subtype_input').val(''); }
+  const subtypeOpts = SUBTYPE_OPTIONS[type] || [];
+  if (subtypeOpts.length && !subtype) {
+    alert('Selecione o subtipo.');
+    return;
+  }
 
   if (sensorMap.some(s => s.channel === ch))  { alert('Canal já utilizado.');   return; }
   if (sensorMap.some(s => s.address === addr)) { alert('Endereço já utilizado.'); return; }
@@ -186,7 +227,7 @@ async function addSensorFromInputs() {
   $('#channel_input').val('');
   $('#addr_input').val('');
   $('#type_input').val('');
-  $('#subtype_input').val('').prop('disabled', true);
+  populateSubtypeOptions('', '');
 
   // Reinicia estado do ping do topo
   resetTopPingState();
@@ -304,13 +345,14 @@ $(document).ready(function() {
   rs485RenderList(sensorMap);
 
   $('#type_input').on('change', function() {
-    if (this.value === 'energia') $('#subtype_input').prop('disabled', false);
-    else $('#subtype_input').val('').prop('disabled', true);
+    populateSubtypeOptions(this.value);
   });
 
   $('#addSensor').on('click', (ev) => { ev.preventDefault(); addSensorFromInputs(); });
 
   rs485FetchAndRender();
+
+  populateSubtypeOptions($('#type_input').val() || '', $('#subtype_input').val());
 
   // Inicia monitor de ping do formulário
   $(document).on('change keyup', '#channel_input, #addr_input', startTopPingMonitor);
