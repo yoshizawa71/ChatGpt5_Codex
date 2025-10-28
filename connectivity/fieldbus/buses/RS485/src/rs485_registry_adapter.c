@@ -2,8 +2,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#include "esp_err.h"
 #include "esp_log.h"
 #include "datalogger_driver.h"   // sensor_map_t, RS485_MAX_SENSORS, load_rs485_config()
+#include "rs485_registry_adapter.h"
+#include "rs485_registry.h"
 
 #ifndef RS485_REG_GLUE_VERBOSE
 #define RS485_REG_GLUE_VERBOSE 1  // coloque 0 para silenciar o dump
@@ -26,6 +29,31 @@ static int subtype_to_phases(const char *s) {
     if (streq_ci(s, "monofasico") || streq_ci(s, "monofásico")) return 1;
     if (streq_ci(s, "trifasico")  || streq_ci(s, "trifásico"))  return 3;
     return 3;
+}
+
+int rs485_registry_get_snapshot(rs485_sensor_t *out, size_t max)
+{
+    if (!out || max == 0) return -1;
+
+    sensor_map_t map[RS485_MAX_SENSORS] = {0};
+    size_t count = 0;
+    esp_err_t lr = load_rs485_config(map, &count);
+    if (lr != ESP_OK) {
+        ESP_LOGW(TAG, "snapshot: load falhou (%s)", esp_err_to_name(lr));
+        return -2;
+    }
+
+    size_t wr = 0;
+    for (size_t i = 0; i < count && wr < max; ++i) {
+        rs485_sensor_t s = {
+            .channel = map[i].channel,
+            .address = map[i].address,
+            .type = rs485_type_from_str(map[i].type),
+            .subtype = rs485_subtype_from_str(map[i].subtype),
+        };
+        out[wr++] = s;
+    }
+    return (int)wr;
 }
 
 bool rs485_registry_get_channel_addr(uint8_t channel, uint8_t *out_addr)
