@@ -2,6 +2,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include <assert.h>
 #include <string.h>
 #include "esp_check.h"
 
@@ -42,6 +43,16 @@ static int from_stop(uart_stop_bits_t s)
 esp_err_t rs485_hw_init(const rs485_hw_cfg_t *cfg)
 {
     s_cfg = *cfg;
+
+    ESP_LOGI(TAG, "UART=%d TX=%d RX=%d DE/RE=%d", cfg->uart_num,
+             cfg->tx_gpio, cfg->rx_gpio, cfg->de_re_gpio);
+
+    assert(cfg->uart_num == RS485_UART_NUM);
+    if (cfg->uart_num != RS485_UART_NUM) {
+        ESP_LOGE(TAG, "UART inesperado para RS-485: %d (esperado %d)",
+                 cfg->uart_num, RS485_UART_NUM);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     uart_config_t uc = {
         .baud_rate  = (int)cfg->baudrate,
@@ -124,6 +135,17 @@ esp_err_t rs485_apply_port_config(unsigned baud, uart_parity_t parity, uart_stop
     if (baud == 0) return ESP_ERR_INVALID_ARG;
 
     uart_port_t port = (uart_port_t)s_cfg.uart_num;
+
+    if (port != RS485_UART_NUM) {
+        ESP_LOGE(TAG, "apply_port_config em UART=%d (esperado %d)", port, RS485_UART_NUM);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI("RS485/CFG", "apply UART=%d baud=%u parity=%c stop=%d",
+             RS485_UART_NUM,
+             baud,
+             (parity == UART_PARITY_EVEN ? 'E' : parity == UART_PARITY_ODD ? 'O' : 'N'),
+             (stop == UART_STOP_BITS_2) ? 2 : 1);
     ESP_RETURN_ON_ERROR(uart_set_baudrate(port, (int)baud), TAG, "set_baud");
     ESP_RETURN_ON_ERROR(uart_set_parity(port, parity), TAG, "set_parity");
     ESP_RETURN_ON_ERROR(uart_set_stop_bits(port, stop), TAG, "set_stop");

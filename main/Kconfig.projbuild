@@ -30,6 +30,16 @@ menu "RS-485"
         default 18
 endmenu  # RS-485
 
+menu "Modem celular"
+    config MODEM_UART_NUM
+        int "UART para modem celular (0, 1 ou 2)"
+        range 0 2
+        default 1
+        help
+            Seleciona qual bloco UART do ESP32 será dedicado ao modem celular.
+            Não utilize o mesmo número do RS-485 para evitar conflitos no barramento.
+endmenu  # Modem celular
+
 menu "Buses e Fieldbus"
 
 menuconfig MODBUS_BUILD_ENABLE

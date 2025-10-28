@@ -27,6 +27,7 @@
 #include "stdbool.h"
 
 #include "u_cfg_sw.h"
+#include "sdkconfig.h"
 #include "u_cfg_hw_platform_specific.h"
 #include "u_cfg_os_platform_specific.h"
 #include "u_compiler.h" // U_ATOMIC_XXX() macros
@@ -34,6 +35,7 @@
 #include "u_error_common.h"
 #include "u_timeout.h"
 #include "u_port_debug.h"
+#include "esp_log.h"
 #include "u_port.h"
 #include "u_port_os.h"
 #include "u_port_uart.h"
@@ -289,6 +291,12 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
             (pinRx >= 0) && (pinTx >= 0) &&
             (gUartData[uart].queue == NULL)) {
 
+            if (uart == CONFIG_RS485_UART_NUM) {
+                ESP_LOGE("UBX_UART", "UART %d reservado para RS-485; abortando abertura", uart);
+                U_PORT_MUTEX_UNLOCK(gMutex);
+                return (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+            }
+
             handleOrErrorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
 
             gUartData[uart].markedForDeletion = false;
@@ -298,6 +306,14 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
             gUartData[uart].pEventCallback = NULL;
             gUartData[uart].pEventCallbackParam = NULL;
             gUartData[uart].eventFilter = 0;
+
+            if (uart == CONFIG_MODEM_UART_NUM) {
+                ESP_LOGI("UBX_UART", "open UART=%d (MODEM) tx=%d rx=%d rts=%d cts=%d baud=%d",
+                         uart, pinTx, pinRx, pinRts, pinCts, baudRate);
+            } else {
+                ESP_LOGI("UBX_UART", "open UART=%d tx=%d rx=%d rts=%d cts=%d baud=%d",
+                         uart, pinTx, pinRx, pinRts, pinCts, baudRate);
+            }
 
             // Set the things that won't change
             config.data_bits  = UART_DATA_8_BITS;

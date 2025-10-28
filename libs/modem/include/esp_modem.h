@@ -17,6 +17,7 @@
 extern "C" {
 #endif
 
+#include "sdkconfig.h"
 #include "esp_modem_dce.h"
 #include "esp_modem_dte.h"
 #include "esp_event.h"
@@ -77,7 +78,7 @@ esp_err_t esp_modem_set_apn(char* apn);
  */
 #define ESP_MODEM_DTE_DEFAULT_CONFIG()          \
     {                                           \
-        .port_num = UART_NUM_1,                 \
+        .port_num = CONFIG_MODEM_UART_NUM,      \
         .data_bits = UART_DATA_8_BITS,          \
         .stop_bits = UART_STOP_BITS_1,          \
         .parity = UART_PARITY_DISABLE,          \

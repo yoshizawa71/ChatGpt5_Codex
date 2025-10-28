@@ -8,7 +8,8 @@
 
 #include "modbus_rtu_master.h"
 #include "driver/uart.h"
-#include "rs485_hw.h" 
+#include "rs485_hw.h"
+#include <limits.h>
 #include <string.h>
 #include "esp_log.h"
 #include "esp_err.h"
@@ -82,15 +83,63 @@ static bool   s_master_ready  = false;
 static uart_mode_t s_last_uart_mode = UART_MODE_UART;
 void rs485_note_set_mode(uart_mode_t m) { s_last_uart_mode = m; }
 
+static char parity_letter(uart_parity_t p)
+{
+    switch (p) {
+        case UART_PARITY_EVEN:  return 'E';
+        case UART_PARITY_ODD:   return 'O';
+        case UART_PARITY_DISABLE:
+        default:                return 'N';
+    }
+}
+
+static int stop_bits_value(uart_stop_bits_t s)
+{
+    return (s == UART_STOP_BITS_2) ? 2 : 1;
+}
+
 /* Helper interno: send_request com lock */
 static inline esp_err_t mb_send_locked(mb_param_request_t *req,
                                        void *data_buf,
                                        TickType_t tmo_ticks)
 {
     if (!req || !data_buf || req->reg_size == 0) return ESP_ERR_INVALID_ARG;
+
+    unsigned baud = 0;
+    uart_parity_t parity = UART_PARITY_DISABLE;
+    uart_stop_bits_t stop = UART_STOP_BITS_1;
+    rs485_get_port_config(&baud, &parity, &stop);
+
+    uint32_t timeout_ms = (tmo_ticks == portMAX_DELAY)
+                              ? UINT32_MAX
+                              : (uint32_t)(tmo_ticks * portTICK_PERIOD_MS);
+
+    ESP_LOGI("RS485/REQ",
+             "UART=%d baud=%u parity=%c stop=%d fc=0x%02X reg=0x%04X qty=%u timeout=%ums",
+             RS485_UART_NUM,
+             baud,
+             parity_letter(parity),
+             stop_bits_value(stop),
+             req->command,
+             req->reg_start,
+             req->reg_size,
+             timeout_ms);
+
     if (s_mb_req_mutex) xSemaphoreTake(s_mb_req_mutex, tmo_ticks);
     esp_err_t err = mbc_master_send_request(req, data_buf);
     if (s_mb_req_mutex) xSemaphoreGive(s_mb_req_mutex);
+
+    uint32_t tx_bytes = 8; // addr + fc + reg + qty + CRC
+    uint32_t rx_bytes = (uint32_t)(req->reg_size * sizeof(uint16_t));
+
+    ESP_LOGI("RS485/REQ",
+             "done fc=0x%02X reg=0x%04X qty=%u -> tx=%u rx=%u err=%s",
+             req->command,
+             req->reg_start,
+             req->reg_size,
+             tx_bytes,
+             rx_bytes,
+             esp_err_to_name(err));
     return err;
 }
 
@@ -101,6 +150,7 @@ void modbus_master_set_request_timeout(uint32_t timeout_ms)
     } else {
         s_req_timeout_ms = timeout_ms;
     }
+    ESP_LOGI("RS485/CFG", "timeout_req=%ums", (unsigned)s_req_timeout_ms);
 }
 
 uint32_t modbus_master_get_request_timeout(void)
@@ -115,6 +165,7 @@ void modbus_master_set_ping_timeout(uint32_t timeout_ms)
     } else {
         s_ping_timeout_ms = timeout_ms;
     }
+    ESP_LOGI("RS485/CFG", "timeout_ping=%ums", (unsigned)s_ping_timeout_ms);
 }
 
 uint32_t modbus_master_get_ping_timeout(void)

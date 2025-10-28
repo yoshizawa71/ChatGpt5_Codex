@@ -17,6 +17,8 @@
 #ifndef _U_CFG_APP_PLATFORM_SPECIFIC_H_
 #define _U_CFG_APP_PLATFORM_SPECIFIC_H_
 
+#include "sdkconfig.h"
+
 /** @file
  * @brief This header file contains configuration information for
  * an ESP32 platform that is fed in at application level; NONE of the
@@ -94,7 +96,7 @@
 /** The UART HW block to use inside the ESP32 chip to talk to a
  * cellular module.
  */
-# define U_CFG_APP_CELL_UART                  2
+# define U_CFG_APP_CELL_UART                  CONFIG_MODEM_UART_NUM
 #endif
 
 /* ----------------------------------------------------------------

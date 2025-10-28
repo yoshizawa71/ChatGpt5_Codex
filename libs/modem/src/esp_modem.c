@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
@@ -497,6 +498,12 @@ modem_dte_t *esp_modem_dte_init(const esp_modem_dte_config_t *config)
     esp_dte->parent.change_mode = esp_modem_dte_change_mode;
     esp_dte->parent.process_cmd_done = esp_modem_dte_process_cmd_done;
     esp_dte->parent.deinit = esp_modem_dte_deinit;
+
+    ESP_LOGI("MODEM", "UART=%d tx=%d rx=%d rts=%d cts=%d", config->port_num,
+             config->tx_io_num, config->rx_io_num,
+             config->rts_io_num, config->cts_io_num);
+    assert(config->port_num == CONFIG_MODEM_UART_NUM);
+    assert(config->port_num != CONFIG_RS485_UART_NUM);
 
     /* Config UART */
     uart_config_t uart_config = {
