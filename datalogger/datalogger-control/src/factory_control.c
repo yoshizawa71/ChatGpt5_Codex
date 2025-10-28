@@ -1216,74 +1216,64 @@ static esp_err_t config_operation_post_handler(httpd_req_t *req)
 }
 //--------------------------------------------------------------------
 // GET /rs485ConfigGet  -> devolve JSON { "sensors": [...] }
-// 1) se existir RS485_MAP_UI_PATH (JSON), entrega-o (contém type/subtype);
-// 2) senão, carrega do binário e monta JSON com type/subtype vazios.
+// Sempre carrega o snapshot persistido e normaliza os campos com os helpers do registry.
 #if CONFIG_MODBUS_SERIAL_ENABLE
 static esp_err_t rs485_config_get_handler(httpd_req_t *req)
 {
     update_last_interaction();
 
-    // 1) Tenta devolver o JSON persistido do front
-    FILE *fj = fopen(RS485_MAP_UI_PATH, "rb");
-    if (fj) {
-        fseek(fj, 0, SEEK_END);
-        long sz = ftell(fj);
-        rewind(fj);
-        if (sz > 0 && sz < 8192) {
-            char *buf = malloc((size_t)sz + 1);
-            if (buf) {
-                size_t n = fread(buf, 1, (size_t)sz, fj);
-                buf[n] = '\0';
-                fclose(fj);
-                httpd_resp_set_type(req, "application/json");
-                httpd_resp_sendstr(req, buf);
-                free(buf);
-                return ESP_OK;
-            }
-        }
-        fclose(fj);
-    }
-
-    // 2) Fallback: monta JSON a partir do binário salvo
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr  = cJSON_CreateArray();
-
     sensor_map_t map[RS485_MAX_SENSORS] = {0};
     size_t count = 0;
-    load_rs485_config(map, &count);  // persiste channel/address no binário  :contentReference[oaicite:4]{index=4}
+    esp_err_t ret = load_rs485_config(map, &count);
+    if (ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "load failed");
+        return ret;
+    }
 
-ESP_LOGI("RS485_REG_GLUE", "DELETE: carregado count=%u", (unsigned)count);
-for (size_t i = 0; i < count; ++i) {
-    ESP_LOGI("RS485_REG_GLUE", "ATUAL[%u]: ch=%u addr=%u type='%s' subtype='%s'",
-             (unsigned)i, map[i].channel, map[i].address, map[i].type, map[i].subtype);
-}
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json oom");
+        return ESP_ERR_NO_MEM;
+    }
 
-/*    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
-        cJSON *it = cJSON_CreateObject();
-        cJSON_AddNumberToObject(it, "channel", map[i].channel);
-        cJSON_AddNumberToObject(it, "address", map[i].address);
-        cJSON_AddStringToObject(it, "type", "");     // sem informação no binário
-        cJSON_AddStringToObject(it, "subtype", "");  // idem
-        cJSON_AddItemToArray(arr, it);
-    }*/
-    
-    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; i++) {
+    cJSON *arr = cJSON_AddArrayToObject(root, "sensors");
+    if (!arr) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json oom");
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (size_t i = 0; i < count && i < RS485_MAX_SENSORS; ++i) {
         if (map[i].channel == 0 || map[i].address < 1 || map[i].address > 247) {
-            continue; // [FIX] ignora lixo legado
+            continue;
         }
-        cJSON *it = cJSON_CreateObject();
-        cJSON_AddNumberToObject(it, "channel", map[i].channel);
-        cJSON_AddNumberToObject(it, "address", map[i].address);
-        cJSON_AddStringToObject(it, "type", "");
-        cJSON_AddStringToObject(it, "subtype", "");
-        cJSON_AddItemToArray(arr, it);
-    }    
-    
-    cJSON_AddItemToObject(root, "sensors", arr);
+
+        rs485_type_t    type    = rs485_type_from_str(map[i].type);
+        rs485_subtype_t subtype = rs485_subtype_from_str(map[i].subtype);
+
+        cJSON *obj = cJSON_CreateObject();
+        if (!obj) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json oom");
+            return ESP_ERR_NO_MEM;
+        }
+
+        cJSON_AddNumberToObject(obj, "channel", map[i].channel);
+        cJSON_AddNumberToObject(obj, "address", map[i].address);
+        cJSON_AddStringToObject(obj, "type", rs485_type_to_str(type));
+        cJSON_AddStringToObject(obj, "subtype", rs485_subtype_to_str(subtype));
+        cJSON_AddItemToArray(arr, obj);
+    }
 
     char *json = cJSON_PrintUnformatted(root);
+    if (!json) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json oom");
+        return ESP_ERR_NO_MEM;
+    }
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json ? json : "{\"sensors\":[]}");
+    httpd_resp_sendstr(req, json);
     free(json);
     cJSON_Delete(root);
     return ESP_OK;
