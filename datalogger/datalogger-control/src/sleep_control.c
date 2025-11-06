@@ -368,7 +368,7 @@ void start_deep_sleep(void)
  // Inicializar o contador de transiÃ§Ã£o para ignorar pulsos por 1 segundo (100 ciclos de 10 ms)
     ulp_sleep_transition_counter = 100;
 
-    // Garantir que system_stable esteja setado para 1 antes de entrar no deep sleep
+    // deixa ESTÁVEL pra poder contar no sono
     ulp_system_stable = 1;
     
 //------------------------------------------------------------------

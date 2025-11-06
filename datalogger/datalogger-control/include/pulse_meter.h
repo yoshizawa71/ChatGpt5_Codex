@@ -21,6 +21,7 @@ struct record_pulse_config {
     uint32_t    total;
     uint32_t    last_pulse_count;
     uint32_t    current_pulse_count;
+    uint32_t    last_saved_daykey; 
 };
 
 struct record_pulse {

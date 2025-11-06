@@ -281,6 +281,8 @@ esp_err_t ret;
     
      blink_init();
      
+ //    activate_mosfet(enable_sara);
+     
   
   	// exemplo provisório (energia = 0, água = 1)
 //set_weg_payload_mode(0); // 1 = water

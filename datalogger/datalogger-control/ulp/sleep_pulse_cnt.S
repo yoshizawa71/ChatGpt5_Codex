@@ -89,7 +89,34 @@ edge_count:
 	.global edge_count_to_wake_up
 edge_count_to_wake_up:
 	.long 0
+//###################################################
+    /* 0 = contato seco (conta so queda)
+       1 = sensor otico (precisa manter LOW por N ciclos) */
+//###################################################
+    .global pulse_input_mode
+pulse_input_mode:
+    .long 0
 
+    /* usado só no modo otico:
+       quantos ciclos de ULP o nivel deve ficar baixo
+       (setado pelo C) */
+    .global opt_low_min_count
+opt_low_min_count:
+    .long 0
+
+    /* contador que o ULP vai descendo enquanto o sinal
+       permanecer baixo no modo otico */
+    .global opt_low_counter
+opt_low_counter:
+    .long 0
+
+    /* flag: 0 = não estou medindo low
+             1 = estou medindo low do otico */
+    .global opt_low_active
+opt_low_active:
+    .long 0
+
+//###############################
 	/* RTC IO number used to sample the input signal.
 	   Set by main program. */
 	.global io_number
@@ -190,8 +217,68 @@ no_change:
     move r2, debounce_counter    // Carrega o endereço do contador de debounce
     ld r3, r3, 0                 // Obtém o valor de debounce_max_count
     st r3, r2, 0                 // Reseta debounce_counter para debounce_max_count
-    halt                         // Encerra o programa
+//------------------------------------------------------
+    /* --- extra: modo otico mede duração do LOW --- */
+//------------------------------------------------------
+    /* se for contato seco (pulse_input_mode == 0) -> sai */
+    move r1, pulse_input_mode
+    ld   r1, r1, 0
+    add  r1, r1, 0
+    jump end_no_change, eq      // se 0 = contato seco, sai
 
+    /* aqui: modo otico */
+    /* ler nivel atual de novo: r0 ainda tem o nivel lido antes deste bloco
+       (0 = baixo, 1 = alto) */
+
+    /* ver se estamos medindo um LOW */
+    move r2, opt_low_active
+    ld   r2, r2, 0
+    add  r2, r2, 0
+    jump end_no_change, eq      // se opt_low_active == 0 -> nada a fazer
+
+    /* estamos medindo LOW do otico */
+    /* se o sinal subiu antes da hora -> descarta */
+    and  r0, r0, 1
+    add  r0, r0, 0
+    jump opt_still_low, eq           // se r0 == 0, continua baixo
+
+   // subiu antes da hora
+opt_abort:
+    move r2, opt_low_active
+    move r0, 0
+    st   r0, r2, 0
+    jump end_no_change
+
+opt_still_low:
+    // decrementa
+    move r2, opt_low_counter
+    ld   r3, r2, 0
+    sub  r3, r3, 1
+    st   r3, r2, 0
+
+    // se chegou em 0, conta
+    add  r3, r3, 0
+    jump opt_count, eq        // r3 == 0 => conta
+
+    // r3 != 0 => ainda não deu tempo
+    jump end_no_change
+
+opt_count:
+    // conta 1
+    move r2, edge_count
+    ld   r0, r2, 0
+    add  r0, r0, 1
+    st   r0, r2, 0
+
+    // limpa flag
+    move r2, opt_low_active
+    move r0, 0
+    st   r0, r2, 0
+    // cai pro fim
+
+end_no_change:
+    halt   // Encerra o programa
+//------------------------------------------------------
 	check_transition:
     /* Decrementar sleep_transition_counter */
     move r3, sleep_transition_counter
@@ -225,20 +312,69 @@ edge_detected:
 	move r2, debounce_counter
 	ld r3, r3, 0
 	st r3, r2, 0
-	/* Flip next_edge */
-	move r3, next_edge
-	ld r2, r3, 0
-	add r2, r2, 1
-	and r2, r2, 1
-	st r2, r3, 0
-	/* Increment edge_count */
-	move r3, edge_count
-	ld r2, r3, 0
-	add r2, r2, 1
-	st r2, r3, 0
+//=====================================================
+    /* Decide modo: 0 = contato seco (conta só queda)
+                    1 = sensor ótico (conta toda borda) */
+//=====================================================
+    move r1, pulse_input_mode
+    ld   r1, r1, 0
+    add  r1, r1, 0
+    jump mode_dry, eq   /* se r1 == 0 -> vai pro modo seco */
 
-	/* Not yet. End program */
-	halt
+mode_optical:
+ /* Modo ótico: NÃO conta já. Só arma medição de LOW. */
+ /* carregar tempo mínimo que veio do C */
+    move r3, opt_low_min_count
+    ld   r2, r3, 0              // r2 = opt_low_min_count
+    move r3, opt_low_counter
+    st   r2, r3, 0              // opt_low_counter = opt_low_min_count
+
+    /* marcar que estamos medindo LOW */
+    move r3, opt_low_active
+    move r2, 1
+    st   r2, r3, 0              // opt_low_active = 1
+
+    /* mesmo assim tem que alternar o próximo nível esperado */
+    move r3, next_edge
+    ld   r2, r3, 0
+    add  r2, r2, 1
+    and  r2, r2, 1
+    st   r2, r3, 0
+    halt
+
+mode_dry:
+    /* r0 ainda contém o nível atual do pino (0 = baixo, 1 = alto)
+     * Queremos contar **só** quando a transição foi para BAIXO (1 -> 0)
+     */
+    and r0, r0, 1      /* garante 0/1 */
+    add r0, r0, 0
+    jump do_falling_inc, eq   /* se r0 == 0 -> foi queda -> conta */
+
+skip_inc_edge:
+    /* subida: não conta, mas precisa alternar o próximo nível esperado */
+    move r3, next_edge
+    ld   r2, r3, 0
+    add  r2, r2, 1
+    and  r2, r2, 1
+    st   r2, r3, 0
+    halt
+
+do_falling_inc:
+    /* alterna o próximo nível esperado
+     * (mesmo que vamos contar, a FSM continua igual)
+     */
+    move r3, next_edge
+    ld   r2, r3, 0
+    add  r2, r2, 1
+    and  r2, r2, 1
+    st   r2, r3, 0
+
+    /* incrementa só na borda de DESCIDA */
+    move r3, edge_count
+    ld   r2, r3, 0
+    add  r2, r2, 1
+    st   r2, r3, 0
+    halt
 
 //--------read ext_sensor status
 pin_check:

@@ -8,6 +8,9 @@
 #include "pulse_meter.h"
 #include "pressure_meter.h"
 
+
+SemaphoreHandle_t config_get_file_mutex(void);
+bool config_fs_ready(void);
 //PCNT FUNCTIONS
 typedef struct {
     int unit;  // the PCNT unit that originated an interrupt

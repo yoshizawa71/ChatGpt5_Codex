@@ -18,7 +18,7 @@
 
 static const char *TAG = "Config_Driver";
 
-static SemaphoreHandle_t file_mutex;
+static SemaphoreHandle_t file_mutex = NULL;
 
 #define littlefs_base_path "/littlefs"
 
@@ -43,6 +43,16 @@ static SemaphoreHandle_t file_mutex;
 
 #define CFG_MAX_JSON 4096
 static char g_cfg_io_buf[CFG_MAX_JSON + 1];
+
+SemaphoreHandle_t config_get_file_mutex(void)
+{
+    return file_mutex;
+}
+
+bool config_fs_ready(void)
+{
+    return (file_mutex != NULL);
+}
 
 bool has_device_config(void)
 {
@@ -120,6 +130,11 @@ bool has_record_pulse_config(void)
 {
     struct stat st;
     bool exists = false;
+    
+        // se ainda não montou, só diz que não tem
+    if (file_mutex == NULL) {
+        return false;
+    }
     
     if (xSemaphoreTake(file_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         if (stat(RECORD_PULSE_CONFIG_FILE, &st) == 0) {
@@ -1029,13 +1044,34 @@ void save_record_pulse_config(struct record_pulse_config *config)
 {
 //	printf(">>>> Save Record Pulse Config<<<<\n");
     cJSON *root = cJSON_CreateObject();
+
+    if (!root) {
+        printf("*** save_record_pulse_config --> no mem for json ***\n");
+        return;
+    }
+ 
     cJSON_AddNumberToObject(root, "last_write_idx", config->last_write_idx);
     cJSON_AddNumberToObject(root, "last_read_idx", config->last_read_idx);
     cJSON_AddNumberToObject(root, "total", config->total);
     cJSON_AddNumberToObject(root, "last_pulse_count", config->last_pulse_count);
     cJSON_AddNumberToObject(root, "current_pulse_count", config->current_pulse_count);
+    cJSON_AddNumberToObject(root, "last_saved_daykey",   config->last_saved_daykey);
 
-    char *pulse_counter_dataset = cJSON_PrintUnformatted(root);  
+    char *pulse_counter_dataset = cJSON_PrintUnformatted(root);
+    
+        if (!pulse_counter_dataset) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (file_mutex == NULL) {
+        // FS ainda não montado → não escreve, mas pelo menos não dá panic
+        free(pulse_counter_dataset);
+        cJSON_Delete(root);
+        printf("*** save_record_pulse_config --> FS not ready, skip save ***\n");
+        return;
+    }
+    
    if (xSemaphoreTake(file_mutex, portMAX_DELAY) == pdTRUE) {
     FILE *f = fopen(RECORD_PULSE_CONFIG_FILE, "w");
     if (f != NULL)
@@ -1069,61 +1105,71 @@ void save_record_pulse_config(struct record_pulse_config *config)
 
 void get_record_pulse_config(struct record_pulse_config *config)
 {
-//	printf(">>>> Get Record Pulse Config<<<<\n");
-    xSemaphoreTake(file_mutex,portMAX_DELAY);
+    if (!config) return;
+
+    // defaults seguros
+    memset(config, 0, sizeof(*config));
+    
+    if (file_mutex == NULL) {
+        // FS não está pronto, então devolve só o default em RAM
+        return;
+       }
+
+    xSemaphoreTake(file_mutex, portMAX_DELAY);
     FILE *f = fopen(RECORD_PULSE_CONFIG_FILE, "r");
 
     if (f == NULL) {
-        // Se não conseguir abrir, loga e retorna liberando o mutex
         printf("### get_record_pulse_config --> File = Null ###\n");
         xSemaphoreGive(file_mutex);
         return;
-     }
-    	vTaskDelay(pdMS_TO_TICKS(10));
-        fseek(f, 0L, SEEK_END);
-        long size = ftell(f);
-        rewind(f);
-        
-        if (size <= 0) {
-        // Arquivo vazio ou erro de tamanho
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+    fseek(f, 0L, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    if (size <= 0) {
         fclose(f);
         printf("### get_record_pulse_config --> SIZE = %ld ###\n", size);
         vTaskDelay(pdMS_TO_TICKS(100));
         xSemaphoreGive(file_mutex);
         return;
     }
-        
-	char buf[256];
-    size_t bytes_read = fread(buf, 1, (size_t) (size < (long)sizeof(buf) - 1 ? size : (long)sizeof(buf) - 1), f);
+
+    char buf[256];
+    size_t to_read = (size < (long)sizeof(buf) - 1) ? (size_t)size : (sizeof(buf) - 1);
+    size_t bytes_read = fread(buf, 1, to_read, f);
     buf[bytes_read] = '\0';
-    // Fecha o arquivo agora que a leitura foi concluída
     fclose(f);
-        
- // Parse do JSON
+
+    // Parse
     cJSON *root = cJSON_Parse(buf);
     if (root == NULL) {
         printf("### get_record_pulse_config --> JSON Parse Error ###\n");
         xSemaphoreGive(file_mutex);
         return;
     }
-    cJSON *item;
-//------------------------------------------------
-//        Print Json File
-//------------------------------------------------
-/*        char *my_json_string = cJSON_Print(root);
-        ESP_LOGI(TAG, ">>>get_record_pulse_config<<<\n%s",my_json_string);  */     
-//------------------------------------------------
-        config->last_write_idx = cJSON_GetObjectItem(root, "last_write_idx")->valueint;
-        config->last_read_idx = cJSON_GetObjectItem(root, "last_read_idx")->valueint;
-        config->total = cJSON_GetObjectItem(root, "total")->valueint;
-        config->last_pulse_count = cJSON_GetObjectItem(root, "last_pulse_count")->valueint;
-        config->current_pulse_count = cJSON_GetObjectItem(root, "current_pulse_count")->valueint;
-        cJSON_Delete(root);
 
+    // helper para ler números com fallback
+    #define READ_NUM(_key, _dst) do { \
+        cJSON *it = cJSON_GetObjectItemCaseSensitive(root, (_key)); \
+        if (cJSON_IsNumber(it)) { (_dst) = (uint32_t) it->valuedouble; } \
+    } while(0)
 
+    READ_NUM("last_write_idx",      config->last_write_idx);
+    READ_NUM("last_read_idx",       config->last_read_idx);
+    READ_NUM("total",               config->total);
+    READ_NUM("last_pulse_count",    config->last_pulse_count);
+    READ_NUM("current_pulse_count", config->current_pulse_count);
+    // [NOVO] pode não existir em arquivos antigos → permanece 0
+    READ_NUM("last_saved_daykey",   config->last_saved_daykey);
+
+    #undef READ_NUM
+
+    cJSON_Delete(root);
     xSemaphoreGive(file_mutex);
 }
-
 
 //---------------------------------------------------------
 

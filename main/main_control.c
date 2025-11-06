@@ -8,6 +8,7 @@
 #include "TCA6408A.h"
 #include "battery_monitor.h"
 #include "energy_meter.h"
+#include "rs485_central.h"
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
@@ -564,10 +565,10 @@ if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load
 //  Leitores dos sensores RS485 externos
 //-------------------------------
 #if CONFIG_MODBUS_SERIAL_ENABLE
-save_sensor_data_rs485(); 
+    rs485_central_poll_and_save(5000);
 #endif
 	
-  if(has_measurement_to_send())
+  if(has_measurement_to_send()&&(ulp_inactivity & UINT16_MAX) != 1)
 	 {
 		 if (has_network_http_enabled()||has_network_mqtt_enabled()){
 			 

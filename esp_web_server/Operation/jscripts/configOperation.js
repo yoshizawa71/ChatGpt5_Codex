@@ -41,6 +41,9 @@ function submit_form(form) {
                         type: 'POST',
                         url: '/rs485ConfigSave',
                         success: function () {
+                            if (typeof rs485FetchAndRender === 'function') {
+                                rs485FetchAndRender();
+                            }
                             alert("Gravação Concluída");
                         },
                         error: function () {

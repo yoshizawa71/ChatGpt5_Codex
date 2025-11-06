@@ -96,4 +96,75 @@ endmenu  # Energia & Debug
 
 comment "Dica: habilite SARA_R422_ENABLE se for usar LTE/NB-IoT"
 
+menu "Pulse Meter"
+
+choice
+    prompt "Pulse save mode"
+    default PULSE_METER_SAVE_FLOW
+    help
+      Escolhe o que será gravado no registro: vazão calculada ou pulso acumulado.
+
+config PULSE_METER_SAVE_FLOW
+    bool "Salvar vazão (flow)"
+
+config PULSE_METER_SAVE_PULSE
+    bool "Salvar pulso acumulado (counter)"
+     
+endchoice
+
+choice PULSE_INPUT_TYPE
+    prompt "Tipo de entrada de pulso"
+    default PULSE_INPUT_DRY
+
+config PULSE_INPUT_DRY
+    bool "Contato seco (reed / hidrômetro)"
+    help
+      Usa o modo de 1 borda (borda de DESCIDA) no ULP.
+
+config PULSE_INPUT_OPTICAL
+    bool "Sensor óptico (saída alimentada)"
+    help
+      Usa o modo com filtro de duração de LOW no ULP.
+
+endchoice
+
+endmenu # Pulse Meter
+
+menu "Cloud / Payload"
+
+choice PAYLOAD_TIMESTAMP_MODE
+    prompt "Formato do timestamp enviado nos payloads"
+    default PAYLOAD_TIMESTAMP_UTC
+    help
+      Escolha se os payloads (MQTT/HTTP) vão com horário UTC ou horário local
+      (igual ao que está gravado no SD / RTC).
+
+config PAYLOAD_TIMESTAMP_UTC
+    bool "UTC (recomendado)"
+
+config PAYLOAD_TIMESTAMP_LOCAL
+    bool "Horário local (sem converter)"
+
+endchoice
+
+config PAYLOAD_TS_ADJUST_ENABLE
+    bool "Habilitar ajuste manual (minutos) no timestamp"
+    default n
+    help
+      Aplica um deslocamento fixo em minutos ao timestamp para testes/compensação.
+      Vale tanto para o caminho UTC quanto para o Local (offset textual).
+
+config PAYLOAD_TS_OFFSET_MINUTES
+    int "Minutos de ajuste (+adianta / -atrasa)"
+    depends on PAYLOAD_TS_ADJUST_ENABLE
+    range -720 720
+    default 0
+    help
+      Ex.: Brasil padrão: -180 (UTC-3). Use somente se precisar corrigir temporariamente.
+
+
+endmenu #Cloud / Payload
+
+
+
 endmenu  # Smart IoT Platform — Recursos

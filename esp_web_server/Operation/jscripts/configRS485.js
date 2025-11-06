@@ -17,7 +17,9 @@ function parseAddr(s) {
   return parseInt(t, 10);
 }
 
-function gatherSensorMap() { return sensorMap.slice(); }
+function gatherSensorMap() {
+  return sensorMap.slice().sort((a, b) => a.channel - b.channel);
+}
 
 function refreshChannelOptions() {
   const used = new Set(sensorMap.map(s => s.channel));
@@ -39,14 +41,24 @@ async function deleteSensorBackend(ch, addr) {
   return j;
 }
 
-function updateSensorStatusList() {
-  const $list = $('#sensorStatusList').empty();
-  sensorMap.sort((a,b)=>a.channel-b.channel).forEach((s) => {
-    const desc = `Canal ${s.channel} – Endereço ${s.address} – ${s.type || ''}${s.subtype ? ' ('+s.subtype+')' : ''}`;
+function rs485RenderList(items) {
+  const $list = $('#rs485-list');
+  if (!$list.length) return;
+
+  $list.empty();
+
+  const sorted = (items || []).slice().sort((a, b) => a.channel - b.channel);
+  if (!sorted.length) {
+    $list.append('<div class="hint">Nenhum sensor cadastrado</div>');
+    return;
+  }
+
+  sorted.forEach((s) => {
+    const desc = `Canal ${s.channel} – Endereço ${s.address} – ${s.type || ''}${s.subtype ? ' (' + s.subtype + ')' : ''}`;
 
     const $line = $('<div class="sensor-line">');
     const $desc = $('<span class="sensor-desc">').text(desc);
-    const $icon = $(`<span class="status-icon led circle disconnected" aria-label="status"></span>`);
+    const $icon = $('<span class="status-icon led circle disconnected" aria-label="status"></span>');
     const $remove = $('<button type="button" class="rm-btn">Remover</button>').on('click', async () => {
       if (!confirm(`Remover o sensor do Canal ${s.channel}, Endereço ${s.address}?`)) return;
       $remove.prop('disabled', true).text('Removendo...');
@@ -55,7 +67,8 @@ function updateSensorStatusList() {
         const i = sensorMap.findIndex(x => x.channel === s.channel && x.address === s.address);
         if (i >= 0) sensorMap.splice(i, 1);
         refreshChannelOptions();
-        updateSensorStatusList();
+        rs485RenderList(sensorMap);
+        rs485FetchAndRender();
       } catch (e) {
         alert(e && e.message ? e.message : 'Falha ao remover.');
         $remove.prop('disabled', false).text('Remover');
@@ -65,7 +78,6 @@ function updateSensorStatusList() {
     $line.append($desc, $('<span>').append($icon, ' ', $remove));
     $list.append($line);
 
-    // Ping único por item da lista (não em loop) para colorir
     $.getJSON(`/rs485Ping?channel=${s.channel}&address=${s.address}&ts=${Date.now()}`)
       .done(res => {
         $icon.toggleClass('connected', !!(res && res.alive))
@@ -75,6 +87,44 @@ function updateSensorStatusList() {
         $icon.removeClass('connected').addClass('disconnected');
       });
   });
+}
+
+function rs485SyncLocalMap(list) {
+  sensorMap.length = 0;
+
+  (list || []).forEach((s) => {
+    if (!s) return;
+    const ch = Number(s.channel);
+    const addr = Number(s.address);
+    if (!Number.isInteger(ch) || ch <= 0) return;
+    if (!Number.isInteger(addr) || addr < 1 || addr > 247) return;
+    if (sensorMap.some(x => x.channel === ch) || sensorMap.some(x => x.address === addr)) return;
+
+    sensorMap.push({
+      channel: ch,
+      address: addr,
+      type: (s.type || '').toString(),
+      subtype: (s.subtype || '').toString()
+    });
+  });
+
+  refreshChannelOptions();
+  rs485RenderList(sensorMap);
+}
+
+function rs485FetchAndRender() {
+  return $.getJSON('/rs485ConfigGet')
+    .done(data => {
+      const items = (data && Array.isArray(data.sensors)) ? data.sensors : [];
+      rs485SyncLocalMap(items);
+    })
+    .fail(() => {
+      rs485RenderList(sensorMap);
+    });
+}
+
+function updateSensorStatusList() {
+  rs485RenderList(sensorMap);
 }
 
 // ====== Formulário: adicionar sensor ======
@@ -128,6 +178,9 @@ async function addSensorFromInputs() {
   sensorMap.push({ channel: ch, address: addr, type, subtype });
   refreshChannelOptions();
   updateSensorStatusList();
+
+  // Garante que o snapshot fique alinhado com o backend persistido
+  rs485FetchAndRender();
 
   // Limpa form
   $('#channel_input').val('');
@@ -248,6 +301,7 @@ document.addEventListener('visibilitychange', () => {
 // ===== Eventos =====
 $(document).ready(function() {
   refreshChannelOptions();
+  rs485RenderList(sensorMap);
 
   $('#type_input').on('change', function() {
     if (this.value === 'energia') $('#subtype_input').prop('disabled', false);
@@ -256,30 +310,7 @@ $(document).ready(function() {
 
   $('#addSensor').on('click', (ev) => { ev.preventDefault(); addSensorFromInputs(); });
 
-  // Carrega sensores já salvos
-  $.getJSON('/rs485ConfigGet')
-    .done(data => {
-      if (data && Array.isArray(data.sensors)) {
-        data.sensors.forEach(s => {
-          if (!s) return;
-          if (typeof s.channel !== 'number' || typeof s.address !== 'number') return;
-          if (sensorMap.length >= RS485_MAX_SENSORS) return;
-
-          if (!sensorMap.some(x => x.channel === s.channel) &&
-              !sensorMap.some(x => x.address === s.address)) {
-            sensorMap.push({
-              channel: s.channel,
-              address: s.address,
-              type: s.type || '',
-              subtype: s.subtype || ''
-            });
-          }
-        });
-        refreshChannelOptions();
-        updateSensorStatusList();
-      }
-    })
-    .fail(() => { /* ok se não existir */ });
+  rs485FetchAndRender();
 
   // Inicia monitor de ping do formulário
   $(document).on('change keyup', '#channel_input, #addr_input', startTopPingMonitor);
@@ -289,3 +320,4 @@ $(document).ready(function() {
 // Exponha utilitários se outros scripts precisarem
 window.rs485RefreshList = updateSensorStatusList;
 window.gatherSensorMap = gatherSensorMap;
+window.rs485FetchAndRender = rs485FetchAndRender;

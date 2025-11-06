@@ -1,11 +1,116 @@
+#include "payload_time.h"
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
 #include "esp_log.h"
-#include "payload_time.h"
+
 
 static const char *TAG = "TIME/UTC";
+
+// ------------------------------------------------------------------
+// Helper: aplica ajuste fixo em minutos (menuconfig)
+// ------------------------------------------------------------------
+static inline int64_t apply_minutes_offset_ms(int64_t ms) {
+#if CONFIG_PAYLOAD_TS_ADJUST_ENABLE
+    return ms + (int64_t)CONFIG_PAYLOAD_TS_OFFSET_MINUTES * 60LL * 1000LL;
+#else
+    return ms;
+#endif
+}
+
+// ------------------------------------------------------------------
+// Helper: parse "DD/MM/YYYY" "HH:MM:SS" -> inteiros (local)
+// ------------------------------------------------------------------
+static bool parse_ddmmyyyy_hhmmss(const char *date, const char *time_str,
+                                  int *Y, int *M, int *D, int *h, int *m, int *s)
+{
+    if (!date || !time_str) return false;
+    
+    int d = 0, mo = 0, y = 0, hh = 0, mi = 0, ss = 0;
+    if (sscanf(date, "%d/%d/%d", &d, &mo, &y) != 3) {
+        return false;
+    }
+    if (sscanf(time_str, "%d:%d:%d", &hh, &mi, &ss) != 3) {
+        return false;
+    }
+    if (Y) { *Y = y; }
+    if (M) { *M = mo; }
+    if (D) { *D = d; }
+    if (h) { *h = hh; }
+    if (m) { *m = mi; }
+    if (s) { *s = ss; }
+    return true;
+}
+
+// ------------------------------------------------------------------
+// Helper: formata offset "+HH:MM" / "-HH:MM" a partir de minutos
+// ------------------------------------------------------------------
+static void format_offset_from_minutes(int minutes, char *buf, size_t n) {
+    // clamp opcional: de -12h a +12h
+    if (minutes < -720) minutes = -720;
+    if (minutes >  720) minutes =  720;
+    char sign = (minutes < 0) ? '-' : '+';
+    int absmin = (minutes < 0) ? -minutes : minutes;
+    int hh = absmin / 60;
+    int mm = absmin % 60;
+    snprintf(buf, n, "%c%02d:%02d", sign, hh, mm);
+}
+
+// ------------------------------------------------------------------
+// IMPLEMENTAÇÃO PRINCIPAL
+// ------------------------------------------------------------------
+bool payload_add_time_iso(cJSON *root, const char *date, const char *time_str)
+{
+    if (!root) return false;
+
+#if CONFIG_PAYLOAD_TIMESTAMP_UTC
+
+    // Caminho UTC: pega o horário LOCAL do SD, converte para UTC (ms),
+    // aplica offset opcional e formata como "YYYY-MM-DDTHH:MM:SSZ".
+    int64_t ts_ms = local_date_time_to_utc_ms(date, time_str);
+    if (ts_ms <= 0) ts_ms = epoch_ms_utc();
+    ts_ms = apply_minutes_offset_ms(ts_ms);
+
+    char iso_utc[32];
+    iso8601_utc_from_ms(ts_ms, iso_utc, sizeof iso_utc);  // garante o 'Z' no final
+    cJSON_AddStringToObject(root, "time", iso_utc);
+    return true;
+
+#else // CONFIG_PAYLOAD_TIMESTAMP_LOCAL
+
+    // Caminho LOCAL: usa a data/hora do SD "como está" e acrescenta um offset explícito (±HH:MM).
+    // Isso gera string ISO-8601 válida: "YYYY-MM-DDTHH:MM:SS-03:00"
+    int Y=0, M=0, D=0, h=0, m=0, s=0;
+    if (!parse_ddmmyyyy_hhmmss(date, time_str, &Y, &M, &D, &h, &m, &s)) {
+        // fallback: gera UTC Z se parsing falhar
+        int64_t ts_ms = epoch_ms_utc();
+        char iso_utc[32];
+        iso8601_utc_from_ms(ts_ms, iso_utc, sizeof iso_utc);
+        cJSON_AddStringToObject(root, "time", iso_utc);
+        return true;
+    }
+
+    // Offset configurável em minutos (default 0). Para Brasil, use -180.
+    char tz_off[8];
+#if CONFIG_PAYLOAD_TS_ADJUST_ENABLE
+    format_offset_from_minutes((int)CONFIG_PAYLOAD_TS_OFFSET_MINUTES, tz_off, sizeof tz_off);
+#else
+    // Se você quiser travar em -03:00 por enquanto, troque por "-03:00".
+    format_offset_from_minutes(-180, tz_off, sizeof tz_off);
+#endif
+
+    char iso_local[40];
+    // "YYYY-MM-DDTHH:MM:SS±HH:MM"
+    snprintf(iso_local, sizeof iso_local,
+             "%04d-%02d-%02dT%02d:%02d:%02d%s",
+             Y, M, D, h, m, s, tz_off);
+
+    cJSON_AddStringToObject(root, "time", iso_local);
+    return true;
+
+#endif
+}
 
 void utc_selftest_once(void)
 {

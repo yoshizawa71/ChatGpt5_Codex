@@ -197,6 +197,7 @@ esp_err_t mqtt_payload_build_from_sd(char *topic_out,  size_t topic_sz,
         // db.date/time já vêm limpos do read_record_sd()
         cJSON_AddStringToObject(rec, "Data",  db.date);
         cJSON_AddStringToObject(rec, "Hora",  db.time);
+        PAYLOAD_ADD_TIME(rec, db.date, db.time);
         cJSON_AddNumberToObject(rec, "Canal", base);
         if (sub > 0) {                       // <— só envia quando existir subcanal
             cJSON_AddNumberToObject(rec, "Subcanal", sub);
@@ -352,7 +353,8 @@ esp_err_t mqtt_payload_build_from_sd_ubidots(char *topic_out,  size_t topic_sz,
     int64_t  ts_ms = to_epoch_ms_from_date_time(db.date, db.time);
     if (ts_ms <= 0) { time_t now = time(NULL); if (now > 0) ts_ms = (int64_t)now * 1000LL; }*/
 double  val = atof(db.data);
-int64_t ts_ms = local_date_time_to_utc_ms(db.date, db.time);
+//int64_t ts_ms = local_date_time_to_utc_ms(db.date, db.time);
+int64_t ts_ms = PAYLOAD_TS_FROM_SD(db.date, db.time);
 if (ts_ms <= 0) ts_ms = epoch_ms_utc();
 
 char    ts_iso[25];
@@ -387,11 +389,12 @@ static inline void make_weg_topic_from_device(char *dst, size_t dstsz) {
 
 /* Lê do SD e monta um único "state" com i_a/i_b/i_c.
    Avança o cursor conforme os registros consumidos. */
+// Novo builder WEG – Energia (i_a, i_b, i_c) + pulse_count (canal 1)
 esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_sz,
-                                         char *payload_out, size_t payload_sz,
-                                         const struct record_index_config *rec_index_in,
-                                         uint32_t *points_out,
-                                         uint32_t *cursor_out)
+                                                char *payload_out, size_t payload_sz,
+                                                const struct record_index_config *rec_index_in,
+                                                uint32_t *points_out,
+                                                uint32_t *cursor_out)
 {
     if (!topic_out || !payload_out || !rec_index_in || !points_out || !cursor_out) {
         return ESP_ERR_INVALID_ARG;
@@ -402,17 +405,24 @@ esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_s
     if (topic_ui && topic_ui[0]) {
         snprintf(topic_out, topic_sz, "%s", topic_ui);
     } else {
-        make_weg_topic_from_device(topic_out, topic_sz); // "wnology/<DEVICE_ID>/state"
+        // "wnology/<DEVICE_ID>/state"
+        make_weg_topic_from_device(topic_out, topic_sz);
     }
 
-    // 2) Varre o SD e coleta um "snapshot" das correntes 3.1/3.2/3.3
+    // 2) Varre o SD e coleta um "snapshot"
     struct record_index_config rec = *rec_index_in;
     *cursor_out = rec.cursor_position;
 
-    bool     have_a = false, have_b = false, have_c = false;
-    double   val_a  = 0.0,   val_b  = 0.0,   val_c  = 0.0;
-    int64_t  ts_ms  = 0;                     // manteremos o MAIS RECENTE em UTC (ms)
-    uint32_t consumed = 0;
+    bool     have_a     = false;
+    bool     have_b     = false;
+    bool     have_c     = false;
+    bool     have_pulse = false;   // <<< NOVO
+    double   val_a      = 0.0;
+    double   val_b      = 0.0;
+    double   val_c      = 0.0;
+    double   val_pulse  = 0.0;     // <<< NOVO
+    int64_t  ts_ms      = 0;       // manteremos o MAIS RECENTE em UTC (ms)
+    uint32_t consumed   = 0;
 
     for (int i = 0; i < MAX_POINTS_TO_SEND; ++i) {
         struct record_data_saved db;
@@ -422,25 +432,39 @@ esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_s
         consumed++;
 
         int base = 0, sub = 0;
-        split_channel((int)db.channel, &base, &sub);  // mapeia 31..39 -> 3.1..3.9
+        split_channel((int)db.channel, &base, &sub);  // mapeia 31.39 -> 3.1.3.9
 
         if (base == 3) {
+            // 3.x → correntes
             if      (sub == 1) { val_a = atof(db.data); have_a = true; }
             else if (sub == 2) { val_b = atof(db.data); have_b = true; }
             else if (sub == 3) { val_c = atof(db.data); have_c = true; }
 
             // timestamp do registro (do SD) → UTC (ms)
-            int64_t t = local_date_time_to_utc_ms(db.date, db.time);
+       //     int64_t t = local_date_time_to_utc_ms(db.date, db.time);
+              int64_t t = PAYLOAD_TS_FROM_SD(db.date, db.time);
             if (t > ts_ms) ts_ms = t;
+        }
+        else if (base == 1) {
+            // <<< NOVO: canal 1 = contador/pulsos >>>
+            // no seu SD está assim: "canal 1   valor 6"
+            val_pulse  = atof(db.data);
+            have_pulse = true;
 
-            if (have_a && have_b && have_c) {
-                break; // snapshot completo
-            }
+            // garante que se o pulso for o mais recente, o time siga ele
+          //  int64_t t = local_date_time_to_utc_ms(db.date, db.time);
+              int64_t t = PAYLOAD_TS_FROM_SD(db.date, db.time);
+            if (t > ts_ms) ts_ms = t;
+        }
+
+        // se já temos tudo que nos interessa, podemos sair mais cedo
+        if (have_a && have_b && have_c && have_pulse) {
+            break;
         }
     }
 
-    // Nada útil para enviar
-    if (!have_a && !have_b && !have_c) {
+    // Nada útil para enviar (isso aqui quase nunca vai acontecer porque ao menos 3.x você está mandando)
+    if (!have_a && !have_b && !have_c && !have_pulse) {
         *points_out = 0;
         return ESP_OK;
     }
@@ -474,10 +498,10 @@ esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_s
     if (!data) { cJSON_Delete(root); return ESP_ERR_NO_MEM; }
     cJSON_AddItemToObject(root, "data", data);
 
-    if (have_a) cJSON_AddNumberToObject(data, "i_a", val_a);
-    if (have_b) cJSON_AddNumberToObject(data, "i_b", val_b);
-    if (have_c) cJSON_AddNumberToObject(data, "i_c", val_c);
-    // (futuro: adicionar v_a/v_b/v_c, p_total_w, etc.)
+    if (have_a)     cJSON_AddNumberToObject(data, "i_a",        val_a);
+    if (have_b)     cJSON_AddNumberToObject(data, "i_b",        val_b);
+    if (have_c)     cJSON_AddNumberToObject(data, "i_c",        val_c);
+    if (have_pulse) cJSON_AddNumberToObject(data, "pulse_count", val_pulse);   // <<< NOVO
 
     // Serializa para o buffer de saída
     char *txt = cJSON_PrintUnformatted(root);
@@ -496,6 +520,8 @@ esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_s
     *points_out = consumed;
     return ESP_OK;
 }
+
+
 
 // Novo builder WEG – Water Meter (press_1, press_2, flow)
 esp_err_t mqtt_payload_build_from_sd_weg_water(char *topic_out,  size_t topic_sz,
@@ -536,7 +562,8 @@ esp_err_t mqtt_payload_build_from_sd_weg_water(char *topic_out,  size_t topic_sz
         else if ((int)db.channel == 1) { val_flow = atof(db.data); have_flow = true; }
 
         // timestamp (UTC) do registro, fica com o mais recente
-        int64_t t = local_date_time_to_utc_ms(db.date, db.time);
+     //   int64_t t = local_date_time_to_utc_ms(db.date, db.time);
+        int64_t t = PAYLOAD_TS_FROM_SD(db.date, db.time);
         if (t > ts_ms) ts_ms = t;
 
         // snapshot completo alcançado? pode parar cedo
