@@ -75,6 +75,8 @@
 #include "u_cell_file.h"
 #include "u_cell_net.h"     // Required by u_cell_private.h
 #include "u_cell_private.h" // So that we can get at some innards
+#include "u_cell_power_strategy.h"
+#include "u_cell_pwr.h"
 
 #include "u_cell_test_cfg.h"
 #include "u_cell_test_private.h"
@@ -315,16 +317,27 @@ errorCode = uDeviceOpen(&gDeviceCfg, pDevHandle);
     
 
 if (errorCode == 0) {
-	    // Força NB‑IoT (prioridade 0) e só depois GSM/EDGE (prioridade 1)
+        ESP_LOGI("LTE_UART_PWR", "U_CFG_APP_PIN_CELL_DTR=%d", U_CFG_APP_PIN_CELL_DTR);
+        int32_t runtimeDtrPin = uCellPwrGetDtrPowerSavingPin(*pDevHandle);
+        if (runtimeDtrPin >= 0) {
+            ESP_LOGI("LTE_UART_PWR", "ubxlib DTR pin (runtime)=%ld", (long) runtimeDtrPin);
+        } else {
+            ESP_LOGW("LTE_UART_PWR", "ubxlib DTR pin não configurado (ret=%ld)", (long) runtimeDtrPin);
+        }
+            // Força NB‑IoT (prioridade 0) e só depois GSM/EDGE (prioridade 1)
     uCellCfgSetRatRank(*pDevHandle, U_CELL_NET_RAT_NB1,              0);
     uCellCfgSetRatRank(*pDevHandle, U_CELL_NET_RAT_GSM_GPRS_EGPRS,   1);
     uCellCfgSetRatRank(*pDevHandle, U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED, 2);
-	
-//---------------------------------------------------------	
+
+//---------------------------------------------------------
 // Obter cliente AT existente
         uAtClientHandle_t atHandle;
         errorCode = uCellAtClientHandleGet(*pDevHandle, &atHandle);
        if (errorCode == 0 && atHandle != NULL) {
+        int32_t uartPsmErr = lte_uart_psm_enable(*pDevHandle, true, NULL);
+        if (uartPsmErr < 0) {
+            ESP_LOGW("LTE_UART_PWR", "Falha ao configurar UPSV/DTR (err=%ld)", (long) uartPsmErr);
+        }
         // Desativar URCs de registro para evitar inundação
         uPortLog("U_CELL: desativando URCs antes de registrar\n");
         uAtClientLock(atHandle);
