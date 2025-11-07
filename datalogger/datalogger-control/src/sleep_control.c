@@ -135,6 +135,7 @@ static void init_sleep_gpio(void)
    gpio_num_t gpio_pulse = GPIO_NUM_36; //GPIO 36 - RTC 0 
    gpio_num_t ext_gpio_sensor = GPIO_NUM_26; //GPIO 26 - RTC 7
    gpio_num_t gpio_low_pwr = GPIO_NUM_27;
+   gpio_num_t gpio_dtr = GPIO_NUM_33;
 
    int rtcio_num = rtc_io_number_get(gpio_pulse);
    assert(rtc_gpio_is_valid_gpio(gpio_pulse) && "GPIO used for pulse counting must be an RTC IO");
@@ -221,7 +222,18 @@ static void init_sleep_gpio(void)
     ESP_ERROR_CHECK(rtc_gpio_set_level(gpio_low_pwr, 0));
     ESP_ERROR_CHECK(rtc_gpio_hold_en(gpio_low_pwr));
     ESP_ERROR_CHECK( rtc_gpio_isolate(gpio_low_pwr));*/
-     
+
+//--------------------------------------------------------------------------------
+//               ULP DTR
+//--------------------------------------------------------------------------------
+rtc_gpio_hold_dis(gpio_dtr);                         // garante que podemos mudar o nível
+ESP_ERROR_CHECK(rtc_gpio_init(gpio_dtr));
+ESP_ERROR_CHECK(rtc_gpio_set_direction(gpio_dtr, RTC_GPIO_MODE_OUTPUT_ONLY));
+ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(gpio_dtr));    // evitar consumo extra
+ESP_ERROR_CHECK(rtc_gpio_pullup_dis(gpio_dtr));
+ESP_ERROR_CHECK(rtc_gpio_set_level(gpio_dtr, 0));    // DTR=0 -> UART do modem dorme (com UPSV=4)
+ESP_ERROR_CHECK(rtc_gpio_hold_en(gpio_dtr));         // manter baixo durante todo o sono
+    
 }
 
 static void init_ulp_program(void)
