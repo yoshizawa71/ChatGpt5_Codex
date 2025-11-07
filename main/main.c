@@ -190,6 +190,23 @@ static void restore_power_pin_after_wakeup(void)
     
 }
 
+static void dtr_restore_after_wakeup(void) {
+    const gpio_num_t DTR_GPIO = GPIO_NUM_33;
+
+    // Se você chegou a ligar o hold global antes de dormir, solte-o aqui.
+    // (Seguro chamar mesmo se não estiver habilitado.)
+    gpio_deep_sleep_hold_dis();
+
+    // Solta o hold do pino no domínio RTC e devolve o pino ao domínio digital
+    rtc_gpio_hold_dis(DTR_GPIO);
+    rtc_gpio_deinit(DTR_GPIO);
+
+    // Reconfigura como GPIO "normal" e acorda a UART (DTR=1)
+    gpio_reset_pin(DTR_GPIO);
+    gpio_set_direction(DTR_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(DTR_GPIO, 1);   // DTR alto = UART ativa (UPSV respeita DTR)
+}
+
 // Função para liberar o hold de todos os pinos que você definiu
 static void release_rtc_holds(void) {
     // Liste aqui TODOS os GPIOs que foram colocados em hold
@@ -225,8 +242,10 @@ void app_main(void)
     cpu_freq_guard_t _g;
     cpu_freq_guard_enter(&_g, 80);
 	ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
-	restore_power_pin_after_wakeup();
+	gpio_deep_sleep_hold_dis();
 	release_rtc_holds();
+	restore_power_pin_after_wakeup();
+	dtr_restore_after_wakeup();
 	ulp_system_stable = 1;
 //===================================================================
 //  Inicializa se o modbus estiver ativo
