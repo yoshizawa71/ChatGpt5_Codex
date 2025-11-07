@@ -35,6 +35,8 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_datalogger_control_bi
 
 static const char *TAG = "Sleep Control";
 
+#define LTE_UART_DTR_GPIO GPIO_NUM_33
+
 //static void restore_power_pin_after_wakeup(void);
 static void init_ulp_program(void);
 //static void update_pulse_count(void);
@@ -135,6 +137,21 @@ static void init_sleep_gpio(void)
    gpio_num_t gpio_pulse = GPIO_NUM_36; //GPIO 36 - RTC 0 
    gpio_num_t ext_gpio_sensor = GPIO_NUM_26; //GPIO 26 - RTC 7
    gpio_num_t gpio_low_pwr = GPIO_NUM_27;
+
+   if (rtc_gpio_is_valid_gpio(LTE_UART_DTR_GPIO)) {
+       rtc_gpio_hold_dis(LTE_UART_DTR_GPIO);
+       gpio_hold_dis(LTE_UART_DTR_GPIO);
+       gpio_reset_pin(LTE_UART_DTR_GPIO);
+       gpio_set_direction(LTE_UART_DTR_GPIO, GPIO_MODE_OUTPUT);
+       gpio_set_level(LTE_UART_DTR_GPIO, 0);
+       ESP_ERROR_CHECK(rtc_gpio_init(LTE_UART_DTR_GPIO));
+       ESP_ERROR_CHECK(rtc_gpio_set_direction(LTE_UART_DTR_GPIO, RTC_GPIO_MODE_OUTPUT_ONLY));
+       ESP_ERROR_CHECK(rtc_gpio_pullup_dis(LTE_UART_DTR_GPIO));
+       ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(LTE_UART_DTR_GPIO));
+       ESP_ERROR_CHECK(rtc_gpio_set_level(LTE_UART_DTR_GPIO, 0));
+       ESP_ERROR_CHECK(rtc_gpio_hold_en(LTE_UART_DTR_GPIO));
+       ESP_LOGI("LTE_UART_PWR", "DTR GPIO33 -> LOW + HOLD (sleep)");
+   }
 
    int rtcio_num = rtc_io_number_get(gpio_pulse);
    assert(rtc_gpio_is_valid_gpio(gpio_pulse) && "GPIO used for pulse counting must be an RTC IO");

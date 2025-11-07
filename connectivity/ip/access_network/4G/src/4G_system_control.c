@@ -9,6 +9,11 @@
 #include "esp_log.h"
 #include "TCA6408A.h"
 #include "u_device.h"
+#include "u_error_common.h"
+#include "u_cell_power_strategy.h"
+
+#define LTE_PWR_STRATEGY_DEFAULT   LTE_PWR_PSM_MIN
+#define LTE_PWR_TAU_DEFAULT_SEC    (3 * 60 * 60)
 
 # ifdef U_CFG_OVERRIDE
 #  include "u_cfg_override.h" // For a customer's configuration override
@@ -79,25 +84,43 @@ uCellNetStatus_t cell_Net_Connection_Control(void)
  } 
  
 static void server_connection_control(void)
- {	
-	 bool delivery=false;
-	  // Usar HTTP se habilitado
+ {
+         bool delivery=false;
+         bool skip_cleanup=false;
+         int32_t power_error = (int32_t)U_ERROR_COMMON_SUCCESS;
+
+          // Usar HTTP se habilitado
     if (has_network_http_enabled()) {
         printf(">>>>>>> HTTP Client <<<<<<<\n");
         delivery = ucell_Http_connection(devHandle);
-        printf(">>>Error = %d\n",cellNet_Close_CleanUp(devHandle));
     }
 
     // Usar MQTT se habilitado
     if (has_network_mqtt_enabled()) {
         printf(">>>>>>> MQTT Client <<<<<<<\n");
-        delivery = ucell_MqttClient_connection (devHandle); 
-        printf(">>>Error = %d\n",cellNet_Close_CleanUp(devHandle));   
+        delivery = ucell_MqttClient_connection (devHandle);
     }
-    
+
+    if (delivery) {
+        power_error = lte_power_apply(devHandle,
+                                      LTE_PWR_STRATEGY_DEFAULT,
+                                      LTE_PWR_TAU_DEFAULT_SEC,
+                                      NULL);
+        if (power_error == (int32_t)U_ERROR_COMMON_SUCCESS &&
+            LTE_PWR_STRATEGY_DEFAULT == LTE_PWR_PSM_MIN) {
+            skip_cleanup = true;
+        } else if (power_error != (int32_t)U_ERROR_COMMON_SUCCESS) {
+            ESP_LOGW(TAG, "PSM strategy failed (%ld), fallback to cleanup", (long) power_error);
+        }
+    }
+
+    if (!skip_cleanup || !delivery) {
+        printf(">>>Error = %d\n",cellNet_Close_CleanUp(devHandle));
+    }
+
     printf("DELIVERY ====>>> %d\n", delivery);
  //   blink_set_profile(BLINK_PROFILE_NONE);
- }  
+ }
 
 static void LTE_System_Task (void* pvParameters)                
 {

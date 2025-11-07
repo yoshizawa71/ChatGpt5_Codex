@@ -36,6 +36,8 @@
 #include "log_mux.h"
 
 
+#define LTE_UART_DTR_GPIO GPIO_NUM_33
+
 #define ENABLE_OTA              0
 #define ENABLE_FACTORY_CONFIG   1
 #define ENABLE_PCNT             1 //PCNT foi deslocado para outro arquivo
@@ -57,6 +59,7 @@ static const char *TAG = "Main datalogger";
 
 static void check_i2c_bus(void);
 static void restore_power_pin_after_wakeup(void);
+static void dtr_restore_after_wakeup(void);
 static void release_rtc_holds(void);
 
 bool first_factory_setup=false;
@@ -180,14 +183,31 @@ static void restore_power_pin_after_wakeup(void)
     // 1) Desativa o hold para retomar controle pelo GPIO “normal”
 //    rtc_gpio_hold_dis(PWR_GPIO);
     gpio_deep_sleep_hold_dis();
-    gpio_hold_dis(PWR_GPIO); 
+    gpio_hold_dis(PWR_GPIO);
 
     // 2) Configura como GPIO de saída (modo “normal”) e seta nível alto
     gpio_reset_pin(PWR_GPIO);
 //    gpio_set_pull_mode(PWR_GPIO, GPIO_FLOATING);  // evita consumo por pull
     gpio_set_level(PWR_GPIO, 1);
     gpio_set_direction(PWR_GPIO, GPIO_MODE_OUTPUT);
-    
+
+}
+
+static void dtr_restore_after_wakeup(void)
+{
+    if (!rtc_gpio_is_valid_gpio(LTE_UART_DTR_GPIO)) {
+        return;
+    }
+
+    rtc_gpio_hold_dis(LTE_UART_DTR_GPIO);
+    gpio_hold_dis(LTE_UART_DTR_GPIO);
+    gpio_reset_pin(LTE_UART_DTR_GPIO);
+    gpio_set_direction(LTE_UART_DTR_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LTE_UART_DTR_GPIO, 1);
+    rtc_gpio_init(LTE_UART_DTR_GPIO);
+    rtc_gpio_set_direction(LTE_UART_DTR_GPIO, RTC_GPIO_MODE_OUTPUT_ONLY);
+    rtc_gpio_set_level(LTE_UART_DTR_GPIO, 1);
+    ESP_LOGI("LTE_UART_PWR", "DTR GPIO33 -> HIGH (wake)");
 }
 
 // Função para liberar o hold de todos os pinos que você definiu
@@ -201,8 +221,9 @@ static void release_rtc_holds(void) {
         GPIO_NUM_12,  // SDMMC D2
         GPIO_NUM_13,  // SDMMC D3
         GPIO_NUM_14,  // SDMMC CLK
-        GPIO_NUM_15   // SDMMC CMD
-   
+        GPIO_NUM_15,  // SDMMC CMD
+        LTE_UART_DTR_GPIO
+
         // Se precisar, acrescente mais GPIOs aqui
     };
     const size_t count = sizeof(pins_to_unhold) / sizeof(pins_to_unhold[0]);
@@ -224,10 +245,11 @@ void app_main(void)
 //	set_cpu_freq_rtc(80); // Definir frequência para 80 MHz
     cpu_freq_guard_t _g;
     cpu_freq_guard_enter(&_g, 80);
-	ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
-	restore_power_pin_after_wakeup();
-	release_rtc_holds();
-	ulp_system_stable = 1;
+        ESP_LOGI(TAG, "Frequência inicial ajustada para 80 MHz para reduzir consumo de corrente");
+        restore_power_pin_after_wakeup();
+        dtr_restore_after_wakeup();
+        release_rtc_holds();
+        ulp_system_stable = 1;
 //===================================================================
 //  Inicializa se o modbus estiver ativo
 //===================================================================

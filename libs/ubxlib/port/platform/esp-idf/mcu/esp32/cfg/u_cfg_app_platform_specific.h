@@ -147,8 +147,7 @@
  * DTR pin to tell the module whether it is permitted to sleep.
  * -1 should be used where there is no such connection.
  */
-//# define U_CFG_APP_PIN_CELL_DTR         33
-# define U_CFG_APP_PIN_CELL_DTR         -1
+# define U_CFG_APP_PIN_CELL_DTR         33
 #endif
 
 #ifndef U_CFG_APP_PIN_CELL_TXD

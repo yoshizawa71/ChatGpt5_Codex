@@ -7,6 +7,7 @@ set(srcs
         "src/u_cell_information.c"
         "src/u_cell_mqtt.c"
         "src/u_cell_net_reg.c"
+        "src/u_cell_power_strategy.c"
         "src/ppp_control.c"
         "src/u_cell_sms.c"
         "src/connectivity.c"   
