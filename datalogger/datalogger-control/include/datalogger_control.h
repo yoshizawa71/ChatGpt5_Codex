@@ -94,6 +94,8 @@ uint16_t get_mqtt_port(void);
 void set_mqtt_port(uint16_t port);
 char * get_mqtt_topic(void);
 void set_mqtt_topic(char* mqtt_topic);
+uint8_t get_mqtt_qos(void);
+void set_mqtt_qos(uint8_t qos);
 
 void enable_network_http(bool enable);
 bool has_network_http_enabled(void);
@@ -181,6 +183,8 @@ bool has_always_on(void);
 void set_always_on(bool always_on);
 bool has_device_active(void);
 void set_device_active(bool turn_on_off);
+bool has_timestamp_mode(void);
+void set_timestamp_mode(bool timestamp);
 void config_system_time(void);
 void log_system_time(void);
 

@@ -16,12 +16,12 @@
 extern SemaphoreHandle_t file_mutex;
 extern struct self_monitoring_data self_monitoring_data;
 
-static const char *TAG = "battery_mon";
+static const char *TAG = "BATTERY_MONITOR";
 
 // Estado persistido entre leituras para evitar oscillação
 static bool last_was_rechargeable = false;
 // variável persistida (carregar de NVS no init, default 1.0f)
-static float power_source_scale_correction = 1.0f;
+static float power_source_scale_correction = 1.046f;
 
 // parâmetros persistidos
 static float nominal_capacity_mAh = 6600.0f; // capacidade original de projeto
@@ -264,6 +264,7 @@ esp_err_t save_power_source_correction(float correction)
 
 void battery_monitor_init(bool enable_interactive_calibration)
 {
+	ESP_LOGI(TAG, "Battery Monitor Init");
     // 1. Inicializa NVS (idempotente)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -438,7 +439,7 @@ esp_err_t load_power_source_correction(void)
     }
     err = nvs_get_blob(h, KEY_PS_CORR, &power_source_scale_correction, &sz);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        power_source_scale_correction = 1.0f; // fallback
+       // power_source_scale_correction = 1.0f; // fallback
         err = ESP_OK;
     }
     nvs_close(h);
@@ -452,6 +453,7 @@ float battery_monitor_get_voltage(void)
 
 float battery_monitor_get_power_source_voltage(void)
 {
+	ESP_LOGI(TAG, ">>>Voltage = %f <<<\n",voltage_power_source);
     return voltage_power_source;
 }
 
@@ -497,6 +499,7 @@ void battery_monitor_save_state(void)
 
 void battery_monitor_update(void)
 {
+	ESP_LOGI(TAG, "Battery Monitor Update");
     static int64_t last_self_mon_save_ts = 0;
     static int64_t last_health_check_ts = 0;
 

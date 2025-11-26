@@ -23,7 +23,6 @@
 #include "TCA6408A.h"
 #include "oled_display.h"
 
-
 #include "sara_r422.h"
 //#include "modbus_rtu_master.h"
 #include "system.h"
@@ -96,31 +95,7 @@ WAKE_UP_NONE          -->cause 6
 //*****************************************************************************************
 //  Functions
 //*****************************************************************************************
-/*
-static void deactivate_calibration(void)
-{
-		struct operation_config restore_calibration;
-       vTaskDelay(pdMS_TO_TICKS(10));
-		if (has_calibration()|| has_level_zero() || has_correction())
-		{
-	    get_operation_config(&restore_calibration);
-	    vTaskDelay(pdMS_TO_TICKS(80));
-		enable_calibration(false);
-		enable_level_zero(false);
-		enable_correction(false);
-		save_operation_config(&restore_calibration);
-		vTaskDelay(pdMS_TO_TICKS(80));
 
-		}
-		return;
-}
-*/
-
-/*int get_wakeup_cause(void)
-{
-	return wkupcause;
-
-}*/
 
 // Função para verificar o estado do barramento I2C
 
@@ -180,13 +155,13 @@ static void restore_power_pin_after_wakeup(void)
     // 1) Desativa o hold para retomar controle pelo GPIO “normal”
 //    rtc_gpio_hold_dis(PWR_GPIO);
     gpio_deep_sleep_hold_dis();
+    
     gpio_hold_dis(PWR_GPIO); 
-
     // 2) Configura como GPIO de saída (modo “normal”) e seta nível alto
     gpio_reset_pin(PWR_GPIO);
-//    gpio_set_pull_mode(PWR_GPIO, GPIO_FLOATING);  // evita consumo por pull
     gpio_set_level(PWR_GPIO, 1);
     gpio_set_direction(PWR_GPIO, GPIO_MODE_OUTPUT);
+    
     
 }
 
@@ -201,8 +176,8 @@ static void release_rtc_holds(void) {
         GPIO_NUM_12,  // SDMMC D2
         GPIO_NUM_13,  // SDMMC D3
         GPIO_NUM_14,  // SDMMC CLK
-        GPIO_NUM_15   // SDMMC CMD
-   
+        GPIO_NUM_15,  // SDMMC CMD
+        GPIO_NUM_33,  // DTR
         // Se precisar, acrescente mais GPIOs aqui
     };
     const size_t count = sizeof(pins_to_unhold) / sizeof(pins_to_unhold[0]);
@@ -228,6 +203,7 @@ void app_main(void)
 	restore_power_pin_after_wakeup();
 	release_rtc_holds();
 	ulp_system_stable = 1;
+	sleep_clear_cap_recharge_window();
 //===================================================================
 //  Inicializa se o modbus estiver ativo
 //===================================================================
@@ -272,18 +248,16 @@ esp_err_t ret;
     init_system();
     mount_driver();
 
+
 //    esp_task_wdt_init(30, true);
 //=================================================================== 
 // Precisa para inicializar os dados no front e tem que ser depois do mout driver
     init_config_control();
 //=================================================================== 
     mount_sd_card();
+    battery_monitor_init(false);
+    blink_init();
     
-     blink_init();
-     
- //    activate_mosfet(enable_sara);
-     
-  
   	// exemplo provisório (energia = 0, água = 1)
 //set_weg_payload_mode(0); // 1 = water
 

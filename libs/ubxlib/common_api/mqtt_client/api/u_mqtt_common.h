@@ -22,7 +22,7 @@
  * of another module should be included here; otherwise
  * please keep #includes to your .c files. */
 
-#include "../../../common_api/device/api/u_device.h"
+#include "u_device.h"
 
 /** \addtogroup MQTT-Client
  *  @{

@@ -26,8 +26,10 @@
 #include "freertos/task.h"
 
 #include "u_device.h"
+#include "esp_log.h" 
+#include "u_cell_power_strategy.h"   // ADICIONE este include
 
-//extern U_PORT_MUTEX_DEF(gUCellPrivateMutex);
+static const char *U_CELL_SMS_TAG = "U_CELL_SMS";
 //---------------------------------------------------------------------------
 // Internals
 
@@ -40,7 +42,45 @@ uAtClientHandle_t getAtHandle(uDeviceHandle_t devHandle)
 }
 
 //---------------------------------------------------------------------------
-// Inicializa o serviço de SMS (text mode, URCs, etc)
+// ----------------------------------------------------------------
+// Helper interno: extrai o número do remetente da linha "+CMGR: ..."
+// Formato típico:
+//   +CMGR: "REC READ","019992667748",,"25/11/15,09:51:36-12"
+// Queremos pegar o que está entre o 3º e o 4º aspas.
+// ----------------------------------------------------------------
+static void extractNumberFromCmgrHeader(const char *header,
+                                        char *outNumber,
+                                        size_t numberMaxLen)
+{
+    if ((header == NULL) || (outNumber == NULL) || (numberMaxLen == 0)) {
+        return;
+    }
+
+    outNumber[0] = '\0';
+
+    const char *firstQuote  = strchr(header, '"');
+    if (!firstQuote) return;
+    const char *secondQuote = strchr(firstQuote + 1, '"');
+    if (!secondQuote) return;
+    const char *thirdQuote  = strchr(secondQuote + 1, '"');
+    if (!thirdQuote) return;
+    const char *fourthQuote = strchr(thirdQuote + 1, '"');
+    if (!fourthQuote) return;
+
+    size_t len = (size_t)(fourthQuote - (thirdQuote + 1));
+    if (len >= numberMaxLen) {
+        len = numberMaxLen - 1;
+    }
+
+    memcpy(outNumber, thirdQuote + 1, len);
+    outNumber[len] = '\0';
+}
+
+/**
+ * Inicializa o serviço de SMS (text mode, URCs, etc).
+ * Agora também garante que a linha RING (RI) está configurada
+ * para gerar pulso quando chegar SMS (via AT+URINGCFG).
+ */
 int32_t cellSmsInit(uDeviceHandle_t devHandle)
 {
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
@@ -119,13 +159,25 @@ int32_t cellSmsInit(uDeviceHandle_t devHandle)
         goto exit;
     }
 
-    // Tudo OK
+    // Tudo OK até aqui
     errorCode = 0;
 
 exit:
     U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
+
+    // Fora do mutex: configura RI para RING (modo 1 = SMS)
+    if (errorCode == 0) {
+        int32_t ringErr = lte_power_enable_ring_sms(devHandle, 1);
+        if (ringErr < 0) {
+            uPortLog("U_CELL_SMS: falha ao configurar RING (URINGCFG) (%ld)\n",
+                     (long) ringErr);
+            // Não tratamos como erro fatal de SMS.
+        }
+    }
+
     return errorCode;
 }
+
 
 //================================================================
 // Envia um SMS: número no formato "+55XXXXXXXXX", texto é message body
@@ -248,19 +300,129 @@ exit:
     return errorCode;
 }
 
-// Lê SMS por índice (stub)
+// ----------------------------------------------------------------
+// Lê um SMS no formato texto (AT+CMGR=index) e devolve número + texto.
+// Retorna 0 em sucesso ou erro (U_ERROR_COMMON_xxx) negativo em falha.
+// ----------------------------------------------------------------
 int32_t cellSmsRead(uDeviceHandle_t devHandle,
                     size_t index,
                     char *outNumber, size_t numberMaxLen,
                     char *outText,   size_t textMaxLen)
 {
-    (void) devHandle;
-    (void) index;
-    (void) outNumber;
-    (void) numberMaxLen;
-    (void) outText;
-    (void) textMaxLen;
-    return (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+    uCellPrivateInstance_t *pInstance;
+    uAtClientHandle_t atHandle;
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
+
+    // Validação básica
+    if ((devHandle == NULL) ||
+        (outNumber == NULL) || (numberMaxLen == 0) ||
+        (outText == NULL)   || (textMaxLen == 0)) {
+        return (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+    }
+
+    outNumber[0] = '\0';
+    outText[0]   = '\0';
+
+    U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
+
+    pInstance = pUCellPrivateGetInstance(devHandle);
+    if (pInstance == NULL) {
+        goto exit;
+    }
+    atHandle = pInstance->atHandle;
+    if (atHandle == NULL) {
+        goto exit;
+    }
+
+    // Envia o comando AT+CMGR=<index>
+    uAtClientLock(atHandle);
+    uAtClientTimeoutSet(atHandle, 60000); // segurança: até 60 s se rede estiver lenta
+
+    uAtClientCommandStart(atHandle, "AT+CMGR=");
+    uAtClientWriteInt(atHandle, (int32_t) index);
+    uAtClientCommandStop(atHandle);
+
+    // 1) Lê a linha de cabeçalho inteira como string bruta
+    //    Exemplo:
+    //      "+CMGR: \"REC READ\",\"019992667748\",,\"25/11/15,09:51:36-12\""
+    char headerBuf[128] = {0};
+
+    if (uAtClientResponseStart(atHandle, "+CMGR:") == 0) {
+        // lê a linha inteira até fim de linha (sem mexer em aspas)
+        uAtClientReadString(atHandle, headerBuf, sizeof(headerBuf), false);
+        uAtClientResponseStop(atHandle);
+    } else {
+        // não achou "+CMGR:", provavelmente não há SMS nesse índice
+        errorCode = uAtClientErrorGet(atHandle);
+        uAtClientUnlock(atHandle);
+        goto exit;
+    }
+
+    // Faz o parse do número do remetente a partir do cabeçalho
+    extractNumberFromCmgrHeader(headerBuf, outNumber, numberMaxLen);
+
+    // 2) Lê a linha de texto da mensagem
+    //    Exemplo: "Tt"
+    if (uAtClientResponseStart(atHandle, NULL) == 0) {
+        uAtClientReadString(atHandle, outText, textMaxLen, false);
+        uAtClientResponseStop(atHandle);
+    }
+
+    // Coleta status final do AT client (inclui o "OK")
+    errorCode = uAtClientErrorGet(atHandle);
+    uAtClientUnlock(atHandle);
+
+    // Log de debug para ver exatamente o que veio
+   uPortLog("U_CELL_SMS: CMGR header=\"%s\", number=\"%s\", text=\"%s\", err=%ld\n",
+         headerBuf, outNumber, outText, (long) errorCode);
+
+exit:
+    U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
+    return errorCode;
+}
+
+// ----------------------------------------------------------------
+// Envolve o cellSmsRead() e faz o log "bonito", com opcional delete.
+// ----------------------------------------------------------------
+int32_t cellSmsReadAndLog(uDeviceHandle_t devHandle,
+                          size_t index,
+                          bool deleteAfterRead)
+{
+    char number[64];
+    char text[256];
+    int32_t errorCode;
+
+    errorCode = cellSmsRead(devHandle,
+                            index,
+                            number, sizeof(number),
+                            text,   sizeof(text));
+
+    if (errorCode < 0) {
+        ESP_LOGW(U_CELL_SMS_TAG,
+                 "Falha ao ler SMS index=%u, errorCode=%ld",
+                 (unsigned) index, (long) errorCode);
+        return errorCode;
+    }
+
+    ESP_LOGI(U_CELL_SMS_TAG,
+             "SMS lido (index=%u): De=%s Texto=\"%s\"",
+             (unsigned) index,
+             (number[0] ? number : "(sem numero)"),
+             text);
+
+    if (deleteAfterRead) {
+        int32_t delErr = cellSmsDelete(devHandle, index);
+        if (delErr < 0) {
+            ESP_LOGW(U_CELL_SMS_TAG,
+                     "Nao foi possivel apagar SMS index=%u, errorCode=%ld",
+                     (unsigned) index, (long) delErr);
+        } else {
+            ESP_LOGI(U_CELL_SMS_TAG,
+                     "SMS index=%u apagado apos leitura.", (unsigned) index);
+        }
+    }
+
+    return errorCode;
 }
 
 // Apaga SMS por índice

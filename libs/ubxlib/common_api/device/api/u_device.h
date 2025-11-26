@@ -22,9 +22,9 @@
  * of another module should be included here; otherwise
  * please keep #includes to your .c files. */
 
-#include "../../../common_api/device/api/u_device_handle.h"
-#include "../../../common_api/device/api/u_device_serial.h"
-#include "../../../common_api/type/api/u_common_spi.h"
+#include "u_device_handle.h"
+#include "u_device_serial.h"
+#include "u_common_spi.h"
 
 /** \addtogroup device Device
  *  @{

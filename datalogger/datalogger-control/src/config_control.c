@@ -197,28 +197,6 @@ struct pressure_data get_saved_pressure_data(void)
 
 }
 
-/*void save_pressure_measurement(struct pressure_dataset send_to_save)
-{
-		printf("pressure_dataset.vmin1= %f\n", send_to_save.vmin1);
-		printf("pressure_dataset.vmin2= %f\n", send_to_save.vmin2);
-		printf("pressure_dataset.fcorr1= %f\n", send_to_save.fcorr1);
-		printf("pressure_dataset.fcorr2= %f\n", send_to_save.fcorr2);
-
-		printf("pressure_dataset.pressure1= %s\n", send_to_save.pressure1);
-		printf("pressure_dataset.pressure2= %s\n", send_to_save.pressure2);
-		printf("pressure_dataset.last_pressure1= %s\n", send_to_save.last_pressure1);
-		printf("pressure_dataset.last_pressure2= %s\n", send_to_save.last_pressure2);
-		printf("pressure_dataset.no_pressure1= %s\n", send_to_save.no_pressure1 ? "true" : "false");
-		printf("pressure_dataset.no_pressure2= %s\n", send_to_save.no_pressure2 ? "true" : "false");
-
-
-	save_pressure_data_set(&send_to_save);
-
-}*/
-
-
-
-
 static void save_default_device_config(void)
 {
 //    get_mac_address(dev_config.id);
@@ -243,6 +221,9 @@ static void save_default_device_config(void)
     dev_config.device_active = false;
     strcpy(dev_config.date, "");
     strcpy(dev_config.time, "00:00:00");
+    
+     // modo timestamp (padrão desativado; ajuste se quiser o contrário)
+    dev_config.timestamp_mode = false;
    
     save_device_config(&dev_config);
 
@@ -267,7 +248,8 @@ static void save_default_network_config(void)
     strcpy(net_config.mqtt_url, "cogneti.ddns.net");
     net_config.mqtt_port = 9999;
     strcpy(net_config.mqtt_topic, "/topic/qos1");
-
+    // --- novo: QoS padrão 1 (com ACK) ---
+     net_config.mqtt_qos = 1;
     save_network_config(&net_config);
 }
 
@@ -440,7 +422,22 @@ void set_mqtt_topic(char* mqtt_topic)
 {
     strcpy(net_config.mqtt_topic, mqtt_topic);
 }
-//-----------------------------
+
+// QoS MQTT
+
+uint8_t get_mqtt_qos(void)
+{
+    return net_config.mqtt_qos;
+}
+
+void set_mqtt_qos(uint8_t qos)
+{
+    if (qos > 2) {
+        qos = 2;   // trava no máximo em 2
+    }
+    net_config.mqtt_qos = qos;
+}
+//==========================================
 
 void enable_network_http(bool enable)
 {
@@ -794,6 +791,16 @@ bool has_device_active(void)
 void set_device_active(bool turn_on_off)
 {
     dev_config.device_active = turn_on_off;
+}
+
+bool has_timestamp_mode(void)
+{
+    return dev_config.timestamp_mode;
+}
+
+void set_timestamp_mode(bool timestamp)
+{
+    dev_config.timestamp_mode = timestamp;
 }
 
 bool should_save_pulse_zero(void)

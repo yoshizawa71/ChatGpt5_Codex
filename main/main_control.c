@@ -38,6 +38,7 @@
 
 #include "tcp_log_server.h"  
 #include "mqtt_publisher.h"
+#include "u_cell_sms.h"
 #include "wifi_link.h"
 #include "wifi_softap_sta.h"
 #include "esp_netif.h"
@@ -46,6 +47,8 @@
 #include "sdkconfig.h"
 
 #include "payload_time.h"
+
+#include "lte_ppp_test.h"
 
 xTaskHandle TimeManager_TaskHandle = NULL;
 
@@ -80,6 +83,9 @@ extern uint32_t ulp_inactivity;
 extern bool wakeup_inactivity;
 extern bool ap_active;
 extern bool wifi_on;
+
+extern uDeviceHandle_t devHandle;  // vem do 4G_system_control.c
+int32_t lte_open_for_sms_if_needed(void);
 //----------------------------------------
 QueueHandle_t xQueue_NetConnect;
 QueueHandle_t xQueue_Factory_Control;
@@ -89,7 +95,6 @@ bool Receive_FactoryControl_Task_ON = false;
 bool Receive_Get_Network_Time_Task_ON = false;
 bool Send_Response_Factory_Control=false;
 static bool console_tcp_start = false;
-
 //----------------------------------------
 
 void TimeManager_Task(void* pvParameters);
@@ -408,6 +413,23 @@ done:
     portEXIT_CRITICAL(&s_send_mux);
 }
 
+static void handle_sms_on_wakeup(void)
+{
+    // 1) Abre modem leve (sem PDP)
+    if (lte_open_for_sms_if_needed() < 0) {
+        printf("SMS: nao foi possivel abrir LTE para leitura de SMS\n");
+        return;
+    }
+
+    // 2) MUITO IMPORTANTE: reconfigurar modo de SMS
+    cellSmsInit(devHandle);
+
+    // 3) Ler e logar
+    int32_t err = cellSmsReadAndLog(devHandle, 1, true);
+    if (err < 0) {
+        ESP_LOGW("MAIN_CONTROL", "Erro ao ler SMS: %ld", (long)err);
+    }
+}
 
 void init_queue_notification(void)
 {
@@ -431,30 +453,7 @@ void init_queue_notification(void)
        
        }
 }
-
-/*static void update_system_time(void) {
-	
-    // Obter o tempo atual do sistema
-    struct timeval tv_now;
-    gettimeofday(&tv_now, NULL);
-    time_t nowtime = tv_now.tv_sec;
-    ESP_LOGI(TAG, ">>>>>>>>>>>>>> Current TIME = %lld", (long long)nowtime);
-
-    // Obter o último tempo salvo
-    struct timeval last_time = { .tv_sec = get_last_sys_time(), .tv_usec = 0 };
-    ESP_LOGI(TAG, ">>>>>>>>>>>>>> Last TIME = %lld", (long long)last_time.tv_sec);
-
-    // Verificar se o tempo atual é inválido e o último tempo salvo é válido
-    if (last_time.tv_sec > nowtime ) {
-        settimeofday(&last_time, NULL);
-        ESP_LOGI(TAG, "RTC atualizado com last_time: %lld", (long long)last_time.tv_sec);
-
-    } else {
-        ESP_LOGI(TAG, "NÃO PRECISA ATUALIZAR O TIME SYSTEM");
-        }
- 
-}
-            */
+            
 //------------------------------------------------
 //  Gerencia o Datalogger
 //------------------------------------------------
@@ -504,25 +503,7 @@ uint8_t counter=0;
 while(1)
 {	
 	vTaskDelay(pdMS_TO_TICKS(1000));
-/*float vbat = battery_monitor_get_voltage();          // bateria em volts
-float vsource = get_power_source_volts();            // fonte em volts
-uint16_t batt_pct = get_battery();                  // % da bateria (0..100)
-float soc = battery_monitor_get_soc();               // 0..1
 
-ESP_LOGI(TAG, "Bateria: %.2fV (%u%%, soc=%.2f), Fonte: %.2fV",
-         vbat, (unsigned)batt_pct, soc, vsource);*/
-       
-	
-	
-/*	printf("AP Active = %d e modbus start = %d\n", ap_active, console_tcp_start);
-	if (ap_active && !console_tcp_start)
-	{
-		printf(">>>>START CONSOLE TCP<<<<\n");
-        console_tcp_enable(3333);
-        ESP_LOGI("SELFTEST", "Hello TCP! tick=%u", (unsigned)esp_log_timestamp());
-		console_tcp_start = true;
-	}*/
-	
 //----------------------------------------------------------
 //Show Display
 //----------------------------------------------------------
@@ -560,18 +541,16 @@ if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load
 	if (save_ret != SAVE_OK) {
     ESP_LOGW(TAG, "save_sensor_data falhou com máscara 0x%02x", save_ret);
 }
-
 //===============================
 //  Leitores dos sensores RS485 externos
 //-------------------------------
 #if CONFIG_MODBUS_SERIAL_ENABLE
     rs485_central_poll_and_save(5000);
 #endif
-	
+
   if(has_measurement_to_send()&&(ulp_inactivity & UINT16_MAX) != 1)
 	 {
 		 if (has_network_http_enabled()||has_network_mqtt_enabled()){
-			 
 			 if (has_activate_sta()){
 			     wifi_send_data_to_server();
 			     }else{
@@ -580,11 +559,13 @@ if ((get_time_minute() % get_deep_sleep_period()==0) && (get_time_minute()!=load
 				      }
 				  } 
 		     }
+		     
 //       printf(">>>>Tem dados para enviar<<<\n");
 	  }
     
     if (!ap_active)
     {wifi_on=false;}
+        
     
 //        Send Keep Alive
 //-----------------------------------------------------------
@@ -607,7 +588,6 @@ printf("Factory task on = %d ####  NetConnect = %d #### Receive_Get_Network_Time
 if (!Receive_FactoryControl_Task_ON && !Receive_NetConnect_Task_ON &&!Receive_Get_Network_Time_Task_ON)
    {
 	vTaskDelay(pdMS_TO_TICKS(10));
-//	 turn_off_sara();
  	start_deep_sleep();
  	}
 

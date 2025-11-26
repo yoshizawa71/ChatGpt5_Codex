@@ -4,7 +4,8 @@
 // ===== Config =====
 const RS485_MAX_SENSORS = 10;
 const CHANNEL_OPTIONS = [3,4,5,6,7,8,9,10,11,12]; // ajuste conforme seu hardware
-
+// Endereços Modbus oferecidos no dropdown (ajuste o range se precisar)
+const ADDRESS_OPTIONS = Array.from({ length: 10 }, (_, i) => i + 1); // 1..10
 // ===== Estado =====
 const sensorMap = []; // { channel, address, type, subtype }
 
@@ -29,6 +30,20 @@ function refreshChannelOptions() {
   CHANNEL_OPTIONS.forEach(ch => {
     const disabled = used.has(ch) ? 'disabled' : '';
     $sel.append(`<option value="${ch}" ${disabled}>${ch}</option>`);
+  });
+}
+
+function refreshAddressOptions() {
+  const usedAddrs = new Set(sensorMap.map(s => s.address));
+  const $sel = $('#addr_input');
+  if (!$sel.length) return;
+
+  $sel.empty();
+  $sel.append('<option value="">Selecione…</option>');
+
+  ADDRESS_OPTIONS.forEach(addr => {
+    const disabled = usedAddrs.has(addr) ? 'disabled' : '';
+    $sel.append(`<option value="${addr}" ${disabled}>${addr}</option>`);
   });
 }
 
@@ -67,8 +82,10 @@ function rs485RenderList(items) {
         const i = sensorMap.findIndex(x => x.channel === s.channel && x.address === s.address);
         if (i >= 0) sensorMap.splice(i, 1);
         refreshChannelOptions();
+        refreshAddressOptions();
         rs485RenderList(sensorMap);
         rs485FetchAndRender();
+        
       } catch (e) {
         alert(e && e.message ? e.message : 'Falha ao remover.');
         $remove.prop('disabled', false).text('Remover');
@@ -109,7 +126,9 @@ function rs485SyncLocalMap(list) {
   });
 
   refreshChannelOptions();
+  refreshAddressOptions();
   rs485RenderList(sensorMap);
+
 }
 
 function rs485FetchAndRender() {
@@ -134,34 +153,68 @@ async function addSensorFromInputs() {
     return;
   }
 
-  const ch = parseInt($('#channel_input').val(), 10);
-  const addr = parseAddr($('#addr_input').val());
-  const type = $('#type_input').val();
+  const ch      = parseInt($('#channel_input').val(), 10);
+  const addr    = parseAddr($('#addr_input').val());
+  const type    = $('#type_input').val();
   const subtype = $('#subtype_input').val();
 
-  if (!ch) { alert('Selecione o canal.'); return; }
-  if (!Number.isInteger(addr) || addr < 1 || addr > 247) { alert('Endereço inválido (1..247).'); return; }
-  if (!type) { alert('Selecione o tipo.'); return; }
-  if (type !== 'energia') { $('#subtype_input').val(''); }
-
-  if (sensorMap.some(s => s.channel === ch))  { alert('Canal já utilizado.');   return; }
-  if (sensorMap.some(s => s.address === addr)) { alert('Endereço já utilizado.'); return; }
-
-  // Só permite salvar se o ping do topo estiver estável (verde)
-  if (!isTopPingStable()) {
-    alert('Aguardando detecção estável do sensor (indicador verde).');
+  if (!ch) {
+    alert('Selecione o canal.');
+    return;
+  }
+  if (!Number.isInteger(addr) || addr < 1 || addr > 247) {
+    alert('Endereço inválido (1..247).');
+    return;
+  }
+  if (!type) {
+    alert('Selecione o tipo.');
     return;
   }
 
+  if (type !== 'energia') {
+    $('#subtype_input').val('');
+  }
+
+  if (sensorMap.some(s => s.channel === ch)) {
+    alert('Canal já utilizado.');
+    return;
+  }
+  if (sensorMap.some(s => s.address === addr)) {
+    alert('Endereço já utilizado.');
+    return;
+  }
+
+  const isEnergy = (type === 'energia');
+
+  // Regras de ping:
+  // - Para tipos normais: exige LED verde (ping estável).
+  // - Para energia (JSY): permite continuar mesmo sem verde, com confirmação.
+  if (!isTopPingStable()) {
+    if (!isEnergy) {
+      alert('Aguardando detecção estável do sensor (indicador verde) antes de adicionar.');
+      return;
+    }
+
+    const proceed = confirm(
+      'O sensor ainda não respondeu nesse endereço (indicador amarelo/vermelho).\n' +
+      'Se for um medidor de energia JSY novo, o sistema pode tentar encontrar o endereço ' +
+      'de fábrica e ajustar automaticamente o endereço Modbus do equipamento para o valor escolhido.\n\n' +
+      'Deseja continuar mesmo assim?'
+    );
+    if (!proceed) return;
+  }
+
   // Chamada ao backend para registrar/persistir
-  let ok = false, errMsg = '';
-  // Chama o endpoint de persistência; back-end responde sempre {"ok":true}
+  let ok = false;
+  let errMsg = '';
+
   try {
     const res = await fetch('/rs485ConfigSave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sensors: [{ channel: ch, address: addr, type, subtype }] })
     });
+
     const j = await res.json().catch(() => ({}));
     ok = !!(res.ok && j && j.ok === true);
     errMsg = (j && j.error) ? String(j.error) : '';
@@ -174,23 +227,25 @@ async function addSensorFromInputs() {
     return;
   }
 
-  // Sucesso: adiciona local e atualiza
+  // Sucesso: atualiza estado local
   sensorMap.push({ channel: ch, address: addr, type, subtype });
   refreshChannelOptions();
+  refreshAddressOptions();
   updateSensorStatusList();
 
-  // Garante que o snapshot fique alinhado com o backend persistido
+  // Re-sincroniza com o back-end
   rs485FetchAndRender();
 
-  // Limpa form
+  // Limpa formulário
   $('#channel_input').val('');
   $('#addr_input').val('');
   $('#type_input').val('');
   $('#subtype_input').val('').prop('disabled', true);
 
-  // Reinicia estado do ping do topo
+  // Reinicia estado de ping do topo
   resetTopPingState();
 }
+
 
 // ====== NOVO: Monitor de ping com histérese no formulário ======
 const PING_INTERVAL_MS = 1500;   // menos carga
@@ -233,11 +288,27 @@ function isTopPingStable() {
 function resetTopPingState() {
   topPingHist = [];
   setTopLedState('led--off', '');
-  setAddButton(false, '', 'Aguardando sensor…');
+
+  const type = $('#type_input').val();
+  const ch   = parseInt($('#channel_input').val(), 10);
+  const addr = parseAddr($('#addr_input').val());
+  const inputsOk =
+    Number.isInteger(ch) && ch > 0 &&
+    Number.isInteger(addr) && addr >= 1 && addr <= 247 &&
+    !!type;
+
+  const isEnergy = (type === 'energia');
+
+  if (isEnergy && inputsOk) {
+    // Para energia, não bloqueamos o botão pelo ping
+    setAddButton(true, 'Adicionar sensor', '');
+  } else {
+    setAddButton(false, '', 'Aguardando sensor…');
+  }
 }
 
 function updateTopUiByHistory() {
-  const ok = topPingHist.filter(Boolean).length;
+  const ok   = topPingHist.filter(Boolean).length;
   const fail = topPingHist.length - ok;
 
   if (!isInputsValidForPing()) {
@@ -245,19 +316,51 @@ function updateTopUiByHistory() {
     return;
   }
 
+  const currentType = $('#type_input').val();
+  const isEnergy    = (currentType === 'energia');
+
   if (ok >= OK_FOR_FOUND) {
+    // Ping respondeu várias vezes nesse endereço -> sensor encontrado
     setTopLedState('led--green', 'Sensor encontrado (não salvo)');
+
+    // Para todos os tipos, com ping verde deixamos adicionar
     setAddButton(true, 'Adicionar sensor', '');
   } else if (fail >= FAIL_FOR_MISSING) {
-    setTopLedState('led--red', 'Sem resposta');
-    setAddButton(false, '', 'Aguardando sensor…');
+    if (isEnergy) {
+      // JSY: pode ser dispositivo novo em outro endereço de fábrica
+      setTopLedState(
+        'led--yellow',
+        'Sem resposta nesse endereço (pode ser JSY novo com outro endereço).'
+      );
+      // IMPORTANTE: para energia, NÃO bloqueamos o botão
+      setAddButton(true, 'Adicionar sensor', '');
+    } else {
+      // Demais tipos: mantém rígido -> sem resposta, não deixa adicionar
+      setTopLedState('led--red', 'Sem resposta');
+      setAddButton(false, '', 'Aguardando sensor…');
+    }
   } else if (topPingHist.length > 0) {
+    // Janela pequena de histórico: ainda em fase de detecção
     setTopLedState('led--yellow', 'Procurando…');
-    setAddButton(false, '', 'Aguardando sensor…');
+
+    if (isEnergy) {
+      // Para energia, mantemos o botão liberado quando os inputs são válidos
+      const ch   = parseInt($('#channel_input').val(), 10);
+      const addr = parseAddr($('#addr_input').val());
+      const inputsOk =
+        Number.isInteger(ch) && ch > 0 &&
+        Number.isInteger(addr) && addr >= 1 && addr <= 247 &&
+        !!currentType;
+      setAddButton(!!inputsOk, 'Adicionar sensor', 'Aguardando sensor…');
+    } else {
+      setAddButton(false, '', 'Aguardando sensor…');
+    }
   } else {
+    // Nenhum ping ainda
     resetTopPingState();
   }
 }
+
 
 function pushTopResult(ok) {
   topPingHist.push(!!ok);
@@ -301,20 +404,44 @@ document.addEventListener('visibilitychange', () => {
 // ===== Eventos =====
 $(document).ready(function() {
   refreshChannelOptions();
+  refreshAddressOptions();
   rs485RenderList(sensorMap);
 
   $('#type_input').on('change', function() {
-    if (this.value === 'energia') $('#subtype_input').prop('disabled', false);
-    else $('#subtype_input').val('').prop('disabled', true);
+    if (this.value === 'energia') {
+      $('#subtype_input').prop('disabled', false);
+    } else {
+      $('#subtype_input').val('').prop('disabled', true);
+    }
+    resetTopPingState();
   });
 
-  $('#addSensor').on('click', (ev) => { ev.preventDefault(); addSensorFromInputs(); });
+  $('#addSensor').on('click', (ev) => {
+    ev.preventDefault();
+    addSensorFromInputs();
+  });
 
   rs485FetchAndRender();
 
-  // Inicia monitor de ping do formulário
   $(document).on('change keyup', '#channel_input, #addr_input', startTopPingMonitor);
   startTopPingMonitor();
+
+  // Proteção do botão "Gravar"
+  if (typeof window.submit_form === 'function') {
+    const original_submit_form = window.submit_form;
+
+    window.submit_form = function() {
+      if (sensorMap.length === 0) {
+        alert(
+          'Nenhum sensor RS-485 foi cadastrado.\n\n' +
+          'Adicione pelo menos um sensor na tabela "Mapeamento de Sensores RS-485" ' +
+          'antes de gravar as configurações de operação.'
+        );
+        return;
+      }
+      original_submit_form();
+    };
+  }
 });
 
 // Exponha utilitários se outros scripts precisarem

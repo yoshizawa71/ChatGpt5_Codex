@@ -69,14 +69,21 @@
     </tr>
 
     <tr>
-      <th rowspan="2">MQTT BROKER</th>
+      <th rowspan="2">MQTT BROKER<br><br>
+             QoS:
+           <select id="mqtt_qos">
+           <option value="0">QoS 0</option>
+           <option value="1">QoS 1</option>
+           <option value="2">QoS 2</option>
+      </select>
+      </th>
       <td colspan="2">URL: <input type="text" id="mqtt_url" name="mqtt_url" value="" size="50" maxlength="49"></td>
     </tr>
     <tr>
       <td>Porta: <input type="number" id="mqtt_port" name="mqtt_port" value="" size="5" maxlength="5"></td>
       <td>Topic: <input type="text" id="mqtt_topic" name="mqtt_topic" value="" size="50" maxlength="50"></td>
     </tr>
-
+    
     <tr>
       <th colspan="3" class="msg"><input id="save" type="submit" value="Gravar" onClick="submit_form()"></th>
     </tr>

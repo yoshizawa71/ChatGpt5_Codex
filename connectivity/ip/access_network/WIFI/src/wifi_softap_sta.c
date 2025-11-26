@@ -569,9 +569,37 @@ esp_err_t start_wifi_ap_sta(void)
     // PMF pode ser habilitado aqui se todos os clientes suportarem
     apcfg.ap.pmf_cfg.required = false;
 #endif
-    if (ssid_ap) strncpy((char*)apcfg.ap.ssid, ssid_ap, sizeof(apcfg.ap.ssid)-1);
-    if (psw_ap)  strncpy((char*)apcfg.ap.password, psw_ap, sizeof(apcfg.ap.password)-1);
-    if (!psw_ap || strlen(psw_ap) == 0) apcfg.ap.authmode = WIFI_AUTH_OPEN;
+
+    if (ssid_ap) {
+        strncpy((char*)apcfg.ap.ssid, ssid_ap, sizeof(apcfg.ap.ssid) - 1);
+        ((char*)apcfg.ap.ssid)[sizeof(apcfg.ap.ssid) - 1] = '\0';
+    }
+
+    size_t pwlen = 0;
+    if (psw_ap) {
+        strncpy((char*)apcfg.ap.password, psw_ap, sizeof(apcfg.ap.password) - 1);
+        ((char*)apcfg.ap.password)[sizeof(apcfg.ap.password) - 1] = '\0';
+        pwlen = strlen((const char*)apcfg.ap.password);
+    }
+
+    if (pwlen == 0) {
+        // Sem senha -> AP aberto
+        apcfg.ap.password[0] = '\0';
+        apcfg.ap.authmode = WIFI_AUTH_OPEN;
+    } else if (pwlen < 8) {
+        // Senha inválida pra WPA/WPA2: NÃO pode dar panic.
+        // Força AP aberto e descarta a senha curta.
+        ESP_LOGW(TAG_AP,
+                 "Senha do AP muito curta (%d chars). Forçando AP aberto.",
+                 (int)pwlen);
+        apcfg.ap.password[0] = '\0';
+        apcfg.ap.authmode = WIFI_AUTH_OPEN;
+    } else {
+        // Senha >= 8 -> mantém modo seguro configurado em WIFI_AUTHMODE_AP
+        if (apcfg.ap.authmode == WIFI_AUTH_OPEN) {
+            apcfg.ap.authmode = WIFI_AUTHMODE_AP;
+        }
+    }
 
     // [NEW] Setar modo AP+STA e configs ANTES do start
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));

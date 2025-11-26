@@ -24,7 +24,7 @@
  * types aside from the primitive ones except uDeviceHandle_t.
  */
 
-#include "../../../common_api/device/api/u_device.h"
+#include "u_device.h"
 
 /** \addtogroup security
  *  @{

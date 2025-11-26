@@ -228,7 +228,6 @@ int64_t local_date_time_to_utc_ms(const char *date, const char *time_str)
 {
     int d, m, y, H, Mi, S;
 
-    // Sucesso esperado: parse_* retornam 0; qualquer não-zero => erro
     if (!date || !time_str) return 0;
     if (parse_ddmmyyyy(date, &d, &m, &y) != 0) return 0;
     if (parse_hhmmss(time_str, &H, &Mi, &S) != 0) return 0;
@@ -241,26 +240,16 @@ int64_t local_date_time_to_utc_ms(const char *date, const char *time_str)
     tm_local.tm_min  = Mi;
     tm_local.tm_sec  = S;
 
-    // 1) mktime() interpreta tm_local como HORA LOCAL -> epoch (segundos) local
-    time_t epoch_local = mktime(&tm_local);
-    if (epoch_local == (time_t)-1) return 0;
+    // mktime interpreta tm_local como HORA LOCAL e devolve epoch em UTC
+    time_t epoch = mktime(&tm_local);
+    if (epoch == (time_t)-1) {
+        return 0;
+    }
 
-    // 2) Calcular o offset local↔UTC no PRÓPRIO instante do registro
-    //    - gmtime_r() dá a visão UTC daquele epoch
-    //    - mktime() sobre esse tm_utc trata-o como "local", resultando em epoch_utc_as_local
-    //    - a diferença é exatamente o offset (segundos)
-    struct tm tm_utc;
-    if (gmtime_r(&epoch_local, &tm_utc) == NULL) return 0;
-
-    time_t epoch_utc_as_local = mktime(&tm_utc);
-    if (epoch_utc_as_local == (time_t)-1) return 0;
-
-    time_t tz_offset_sec = epoch_local - epoch_utc_as_local;  // p.ex. -10800
-
-    // 3) Converter epoch local -> UTC
-    int64_t epoch_utc_ms = ((int64_t)epoch_local - (int64_t)tz_offset_sec) * 1000LL;
-    return epoch_utc_ms;
+    // Já é UTC, só converter para ms
+    return ((int64_t)epoch) * 1000LL;
 }
+
 
 const char *iso8601_utc_from_ms(int64_t epoch_ms, char *buf, size_t n)
 {

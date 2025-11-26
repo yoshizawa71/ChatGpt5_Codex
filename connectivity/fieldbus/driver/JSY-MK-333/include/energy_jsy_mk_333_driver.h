@@ -11,9 +11,16 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "esp_err.h"   // para usar ESP_ERR_INVALID_ARG etc.
 
 /* FC usado pelo equipamento (3=holding, 4=input) */
 typedef enum { JSY_FC_AUTO=0, JSY_FC_03=3, JSY_FC_04=4 } jsy_fc_t;
+
+// Registrador de configuração de comunicação:
+// high byte = endereço escravo, low byte = baud/formato
+#define JSY_REG_COMM_CONFIG   0x0004
+#define JSY_ADDR_MIN          1
+#define JSY_ADDR_MAX_HARD     247
 
 /* Mapa de registradores/escala (configure conforme o seu aparelho) */
 typedef struct {
@@ -46,13 +53,27 @@ static inline jsy_map_t jsy_mk333_default_map(void) {
     return m;
 }
 
+// Registrador de configuração de comunicação do JSY (endereço + baud/paridade)
+#define JSY_REG_COMM_CONFIG   0x0004
+#define JSY_ADDR_MIN          1
+#define JSY_ADDR_MAX_HARD     247
+
+/* Reprograma o endereço Modbus do JSY-MK-333G.
+ * Retorna 0 em sucesso; != 0 em falha (normalmente um esp_err_t).
+ */
+int jsy_mk333_change_address(uint8_t old_addr, uint8_t new_addr);
+
+
 /* Tenta detectar o FC e verificar se responde a “algum” registrador do mapa. */
 int jsy_mk333_probe(uint8_t addr, jsy_map_t *map, uint8_t *used_fc);
 
 /* Lê os valores principais (usa o mapa informado). Retorna 0 em sucesso. */
 int jsy_mk333_read_basic(uint8_t addr, const jsy_map_t *map, jsy_values_t *out);
 
-
+/* Reprograma o endereço Modbus do JSY-MK-333G.
+ *  Retorno: 0 em sucesso; !=0 em falha (normalmente um esp_err_t).
+ */
+int jsy_mk333_change_address(uint8_t old_addr, uint8_t new_addr);
 
 
 #endif /* CONNECTIVITY_FIELDBUS_DRIVER_JSY_MK_333_INCLUDE_ENERGY_JSY_MK_333_DRIVER_H_ */

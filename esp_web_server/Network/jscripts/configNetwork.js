@@ -22,6 +22,13 @@ function submit_form() {
             net_config.mqtt_url = $("#mqtt_url").val();
             net_config.mqtt_port = parseInt($("#mqtt_port").val());
             net_config.mqtt_topic = $("#mqtt_topic").val();
+                       // --- QoS MQTT (0–2) ---
+            let qos = parseInt($("#mqtt_qos").val(), 10);
+            if (isNaN(qos) || qos < 0 || qos > 2) {
+                alert("QoS MQTT inválido. Use 0, 1 ou 2.");
+                return;
+            }
+            net_config.mqtt_qos = qos;
             
             if (isNaN(net_config.mqtt_port) || isNaN(net_config.data_server_port)) {
                 throw "Exception";
@@ -82,6 +89,14 @@ $(document).ready(function() {
             $("#mqtt_url").val(obj.mqtt_url);
             $("#mqtt_port").val(obj.mqtt_port);
             $("#mqtt_topic").val(obj.mqtt_topic);
+            
+                  // --- QoS MQTT (0–2), default 1 se não vier do backend ---
+            if (typeof obj.mqtt_qos === 'number' &&
+               obj.mqtt_qos >= 0 && obj.mqtt_qos <= 2) {
+               $('#mqtt_qos').val(obj.mqtt_qos);
+              } else {
+                      $('#mqtt_qos').val(1); // mantém o comportamento atual (QoS 1)
+                      }
 
   //          console.log("Estado inicial - Protocolo:", $("input[name='protocol']:checked").val());
         },

@@ -9,6 +9,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "esp_netif.h"
+#include "esp_event.h"
+
 extern void set_cpu_freq_rtc(int mhz);
 
 static void init_nvs(void);
@@ -21,6 +24,9 @@ static int s_req160 = 0;
 static int s_req240 = 0;
 static int s_base_mhz = 80;          // seu default de boot
 static int s_curr_mhz = 80;
+
+// Flag estática para evitar inicialização duplicada
+static bool s_net_core_inited = false;
 
 static inline int max(int a, int b) { return a > b ? a : b; }
 
@@ -96,6 +102,34 @@ static void cpu_apply_locked(void)
         ESP_LOGI(TAG, "CPU freq => %d MHz (base=%d, r160=%d, r240=%d)",
                  s_curr_mhz, s_base_mhz, s_req160, s_req240);
     }
+}
+
+esp_err_t system_net_core_init(void)
+{
+    if (s_net_core_inited) {
+        // Já inicializado, nada a fazer
+        return ESP_OK;
+    }
+
+    esp_err_t err;
+
+    // 1) Inicializa esp_netif (stack de rede do IDF)
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init() falhou: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 2) Cria event loop default (para Wi-Fi, PPP_CTRL_EVENT, etc.)
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default() falhou: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_net_core_inited = true;
+    ESP_LOGI(TAG, "Núcleo de rede inicializado (esp_netif + event loop).");
+    return ESP_OK;
 }
 
 void init_system(void) {

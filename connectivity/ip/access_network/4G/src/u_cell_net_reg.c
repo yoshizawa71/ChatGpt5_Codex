@@ -421,7 +421,7 @@ if (errorCode == 0) {
              U_PORT_TEST_ASSERT(gLastNetStatus == status);	
 //=======================================================================			
 			 if(status == U_CELL_NET_STATUS_REGISTERED_HOME||status == U_CELL_NET_STATUS_REGISTERED_ROAMING){
-			 blink_set_profile(BLINK_PROFILE_COMM_REGISTERED);
+			
 			 
 int32_t csq = cellGetCsqRaw(*pDevHandle);
 if (csq >= 0) {
@@ -508,6 +508,41 @@ uPortLog("======>>> CSQ estimado: %d\n", csq);
     return errorCode;
 
 }
+
+// Abre o device (SARA) sem registrar nem ativar PDP.
+// Serve para cenários como leitura de SMS.
+int32_t cell_OpenDevice_NoReg(uDeviceHandle_t *pDevHandle)
+{
+    int32_t errorCode;
+
+    gLastNetStatus = U_CELL_NET_STATUS_UNKNOWN;
+
+    // Limpa estado de testes/handles (igual ao começo de cell_Net_Register_Connect)
+    uCellTestPrivateCleanup(&gHandles);
+
+    // Inicializa camadas base da ubxlib
+    errorCode = uPortInit();
+    if (errorCode != 0) {
+        return errorCode;
+    }
+
+    errorCode = uDeviceInit();
+    if (errorCode != 0) {
+        return errorCode;
+    }
+
+    // Abre o device com a mesma configuração já usada no projeto
+    errorCode = uDeviceOpen(&gDeviceCfg, pDevHandle);
+    uPortLog("cell_OpenDevice_NoReg: uDeviceOpen() retornou %d.\n", errorCode);
+
+    return errorCode;
+}
+
+
+
+
+
+
 
 /** Clean-up to be run at the end of this round of tests, just
  * in case there were test failures which would have resulted

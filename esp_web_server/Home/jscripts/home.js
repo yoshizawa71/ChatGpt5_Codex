@@ -65,7 +65,25 @@ $(document).ready(function() {
             $("#company_label").html(obj.company);
             $("#serial_number").html(obj.serial_number);
             $("#csq").html(obj.csq);
-            $("#battery").html(obj.battery);
+            
+            let bat = obj.battery;
+
+            if (typeof bat === "number") {
+                // veio como número do ESP
+                $("#battery").html(bat.toFixed(2) + " V");
+            } else if (typeof bat === "string" && bat.trim() !== "") {
+                // se por algum motivo vier string, tenta converter
+                let num = parseFloat(bat.replace(",", "."));
+                if (!isNaN(num)) {
+                    $("#battery").html(num.toFixed(2) + " V");
+                } else {
+                    // fallback: mostra a string mesmo
+                    $("#battery").html(bat + " V");
+                }
+            } else {
+                $("#battery").html("--");
+            }
+
             $("#last_comm").html(obj.last_comm);
         }
     });

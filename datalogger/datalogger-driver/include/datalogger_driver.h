@@ -118,6 +118,7 @@ struct device_config {
     bool        finished_factory;
     bool        always_on;
     bool        device_active;
+    bool        timestamp_mode;   // novo: usar timestamp no payload
 };
 
 struct network_config {
@@ -132,7 +133,8 @@ struct network_config {
     char        token[50];
     char        mqtt_url[50];
     uint16_t    mqtt_port;
-    char        mqtt_topic[50];   
+    char        mqtt_topic[50];
+    uint8_t     mqtt_qos;      // 0, 1 ou 2   
     bool        user_en;
     bool        token_en;
     bool        pw_en;

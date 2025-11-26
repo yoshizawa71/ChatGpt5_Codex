@@ -91,7 +91,6 @@ static void split_channel(int raw, int *canal_base, int *sub){
     }
 }
 
-
 // =================== Builder genérico (sem SD) ===================
 esp_err_t mqtt_payload_build(char *topic_out, size_t topic_sz,
                              char *payload_out, size_t payload_sz)
@@ -520,8 +519,6 @@ esp_err_t mqtt_payload_build_from_sd_weg_energy(char *topic_out,  size_t topic_s
     *points_out = consumed;
     return ESP_OK;
 }
-
-
 
 // Novo builder WEG – Water Meter (press_1, press_2, flow)
 esp_err_t mqtt_payload_build_from_sd_weg_water(char *topic_out,  size_t topic_sz,

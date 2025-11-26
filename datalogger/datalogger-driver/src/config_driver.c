@@ -312,9 +312,18 @@ void save_device_config(struct device_config *config)
     {
         cJSON_AddTrueToObject(root, "device_active");
     }
-    else
+     else
     {
         cJSON_AddFalseToObject(root, "device_active");
+    }
+    
+     if(config->timestamp_mode)
+    {
+        cJSON_AddTrueToObject(root, "timestamp_mode");
+    }
+     else
+    {
+        cJSON_AddFalseToObject(root, "timestamp_mode");
     }
     
 /*    if(config->send_value)
@@ -436,7 +445,23 @@ void get_device_config(struct device_config *config)
 
     it = cJSON_GetObjectItem(root, "wifi_password_ap");
     if (cJSON_IsString(it) && it->valuestring) {
-        snprintf(config->wifi_password_ap, sizeof(config->wifi_password_ap), "%s", it->valuestring);
+        size_t pwlen = strlen(it->valuestring);
+
+        if (pwlen == 0) {
+            // Sem senha -> AP aberto
+            config->wifi_password_ap[0] = '\0';
+        } else if (pwlen < 8) {
+            // Senha curta -> não salva, força vazio
+            ESP_LOGW("CONFIG_DRIVER",
+                     "Senha AP muito curta (%d chars). Armazenando vazia (AP aberto).",
+                     (int)pwlen);
+            config->wifi_password_ap[0] = '\0';
+        } else {
+            // Senha válida (>= 8)
+            snprintf(config->wifi_password_ap,
+                     sizeof(config->wifi_password_ap),
+                     "%s", it->valuestring);
+        }
     } else {
         config->wifi_password_ap[0] = '\0';
     }
@@ -539,6 +564,10 @@ void get_device_config(struct device_config *config)
     // device_active
     it = cJSON_GetObjectItem(root, "device_active");
     config->device_active = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
+    
+    // timestamp_mode
+    it = cJSON_GetObjectItem(root, "timestamp_mode");
+    config->timestamp_mode = (it && cJSON_IsBool(it)) ? cJSON_IsTrue(it) : false;
 
     // Libera JSON e mutex
     cJSON_Delete(root);
@@ -563,7 +592,8 @@ void save_network_config(struct network_config *config)
     cJSON_AddStringToObject(root, "mqtt_url", config->mqtt_url);
     cJSON_AddNumberToObject(root, "mqtt_port", config->mqtt_port);
     cJSON_AddStringToObject(root, "mqtt_topic", config->mqtt_topic);
- //   printf("@@@ Save MQTT TOPIC =%s\n", config->mqtt_topic); 
+ //   printf("@@@ Save MQTT TOPIC =%s\n", config->mqtt_topic);
+    cJSON_AddNumberToObject(root, "mqtt_qos", config->mqtt_qos);
  
      if(config->http_en)
     {
@@ -692,6 +722,16 @@ void get_network_config(struct network_config *config)
         config->mqtt_port = cJSON_GetObjectItem(root, "mqtt_port")->valueint;
         strcpy(config->mqtt_topic, cJSON_GetObjectItem(root, "mqtt_topic")->valuestring);
  //       printf("@@@ Load MQTT TOPIC =%s\n", config->mqtt_topic);
+  item = cJSON_GetObjectItem(root, "mqtt_qos");
+        if (item && cJSON_IsNumber(item)) {
+            int q = item->valueint;
+            if (q < 0) q = 0;
+            if (q > 2) q = 2;
+            config->mqtt_qos = (uint8_t)q;
+        } else {
+            config->mqtt_qos = 1; // default para arquivos antigos
+        }
+ 
 //-------------------------------------------------------------------------------------------------------    
         if(cJSON_IsTrue(cJSON_GetObjectItem(root, "http_enable")))
         {

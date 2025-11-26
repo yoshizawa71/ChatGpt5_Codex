@@ -10,6 +10,7 @@ idf_component_register(SRCS "${srcs}"
                               freertos
                               nvs_flash
                               esp_pm
+                              esp_netif
                              )
 
                             

@@ -46,6 +46,7 @@
 #include "cJSON.h"
 
 #include "sdmmc_driver.h"
+#include "lte_payload_builder.h"
 
 static const char *TAG = "MQTT_CELL";
 
@@ -95,6 +96,38 @@ bool mqtt_publish_delivery=false;
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
+// Decide se uma publicação MQTT deve ser retentiva (retain=1) com base no tópico.
+// Mantido totalmente local neste módulo para não afetar outros subsistemas.
+//
+// Estratégia atual:
+//  - Tópicos que terminam com "/confirm" serão retentivos (ex.: ".../confirm").
+//  - Todos os demais tópicos serão não retentivos.
+//
+// Isso garante:
+//  - Pelo menos 1 tópico retentivo (confirmações/comandos).
+//  - Pelo menos 1 tópico não retentivo (telemetria normal).
+static bool mqtt_should_retain(const char *topic)
+{
+    if (topic == NULL) {
+        return false;
+    }
+
+    const char *suffix_confirm = "/confirm";
+    size_t topic_len   = strlen(topic);
+    size_t suffix_len  = strlen(suffix_confirm);
+
+    if (topic_len >= suffix_len) {
+        const char *tail = topic + (topic_len - suffix_len);
+        if (strcmp(tail, suffix_confirm) == 0) {
+            // Ex.: "/topic/qos1/confirm" → retentivo
+            return true;
+        }
+    }
+
+    // Demais tópicos (ex.: "/topic/qos1", "/topic/qos1/receive") → não retentivos
+    return false;
+}
+
 
 // Callback for unread message indications.
 static void messageIndicationCallback(int32_t numUnread, void *pParam)
@@ -261,11 +294,11 @@ static void process_mqtt_command(const char *command_json, size_t length, uMqttC
             cJSON *data_send_frequency = cJSON_GetObjectItem(value, "data_send_frequency");
             if (data_send_frequency != NULL && cJSON_IsNumber(data_send_frequency)) {
                 if (data_send_frequency->valueint >= 1) {
-                    uPortLog("Updating data send frequency to %d seconds\n", data_send_frequency->valueint);
+                    uPortLog("Updating data send frequency to %d minutes\n", data_send_frequency->valueint);
                     set_send_period(data_send_frequency->valueint);
 
                 } else {
-                    uPortLog("Data send frequency too low: %d seconds\n", data_send_frequency->valueint);
+                    uPortLog("Data send frequency too low: %d minutes\n", data_send_frequency->valueint);
                     success = false;
                 }
             }
@@ -274,11 +307,11 @@ static void process_mqtt_command(const char *command_json, size_t length, uMqttC
             cJSON *deep_sleep_time = cJSON_GetObjectItem(value, "deep_sleep_time");
             if (deep_sleep_time != NULL && cJSON_IsNumber(deep_sleep_time)) {
                 if (deep_sleep_time->valueint >= 1) {
-                    uPortLog("Updating deep sleep time to %d seconds\n", deep_sleep_time->valueint);
+                    uPortLog("Updating deep sleep time to %d minutes\n", deep_sleep_time->valueint);
                     set_deep_sleep_period(deep_sleep_time->valueint);
 
                 } else {
-                    uPortLog("Deep sleep time too low: %d seconds\n", deep_sleep_time->valueint);
+                    uPortLog("Deep sleep time too low: %d minutes\n", deep_sleep_time->valueint);
                     success = false;
                 }
             }
@@ -357,14 +390,38 @@ static void process_mqtt_command(const char *command_json, size_t length, uMqttC
     }
 
    // Enviar mensagem de confirmaÃ§Ã£o para o tÃ³pico de confirmaÃ§Ã£o
-    if (pContext != NULL) {
+/*    if (pContext != NULL) {
         snprintf(confirmation_message, sizeof(confirmation_message),
                  "{\"status\": \"%s\", \"command\": \"%s\"}",
                  success ? "success" : "failed", cmd_str);
-        uPortLog("Publishing confirmation: %s to topic %s\n", confirmation_message, confirm_topic);
+        uPortLog("Publishing confirmation: %s to topic %s (QoS 1 fixo)\n",
+                 confirmation_message, confirm_topic);
         uMqttClientPublish(pContext, confirm_topic, confirmation_message, strlen(confirmation_message),
                            U_MQTT_QOS_AT_LEAST_ONCE, false);
-    }
+
+    }*/
+    
+    if (pContext != NULL) {
+    snprintf(confirmation_message, sizeof(confirmation_message),
+             "{\"status\": \"%s\", \"command\": \"%s\"}",
+             success ? "success" : "failed", cmd_str);
+
+    // Para confirmações, queremos que o último estado fique disponível
+    // para quem se inscrever depois: usamos retain=true para tópicos
+    // que terminam com "/confirm".
+    bool retain_flag_confirm = mqtt_should_retain(confirm_topic);
+
+    uPortLog("Publishing confirmation: %s to topic %s (QoS 1 fixo, retain=%d)\n",
+             confirmation_message, confirm_topic, retain_flag_confirm ? 1 : 0);
+
+    uMqttClientPublish(pContext,
+                       confirm_topic,
+                       confirmation_message,
+                       strlen(confirmation_message),
+                       U_MQTT_QOS_AT_LEAST_ONCE,
+                       retain_flag_confirm);
+}
+
 
     cJSON_Delete(root);
 }
@@ -419,7 +476,17 @@ bool ucell_MqttClient_connection (uDeviceHandle_t devHandle){
     printf(">>>>>> Server Port = %d\n", mqtt_port);
     char* topic = get_mqtt_topic();
     printf(">>>>>> Topic = %s\n", topic);
-    
+        uint8_t qos_cfg = get_mqtt_qos();
+    if (qos_cfg > 2) {
+        qos_cfg = 2;
+    }
+    uMqttQos_t qos_enum = U_MQTT_QOS_AT_MOST_ONCE;
+    if (qos_cfg == 1) {
+        qos_enum = U_MQTT_QOS_AT_LEAST_ONCE;
+    } else if (qos_cfg == 2) {
+        qos_enum = U_MQTT_QOS_EXACTLY_ONCE;
+    }
+     
     char* usuario = get_network_user();
     char* senha = get_network_pw();
 	
@@ -442,7 +509,7 @@ bool ucell_MqttClient_connection (uDeviceHandle_t devHandle){
     get_index_config(&rec_mqtt_index);
     
 //    esp_err_t err = json_data_payload(mqtt_payload, MQTT_PAYLOAD_SIZE, rec_mqtt_index, &counter, &cursor_position);
-       esp_err_t err = json_data_payload(mqtt_payload,
+       esp_err_t err = lte_json_data_payload(mqtt_payload,
                          MQTT_PAYLOAD_SIZE,
                          rec_mqtt_index,
                          &counter,
@@ -473,25 +540,33 @@ bool ucell_MqttClient_connection (uDeviceHandle_t devHandle){
 						
             uMqttClientSetMessageCallback(pContext, messageIndicationCallback, (void *) &messagesAvailable);
 
-            uPortLog("Subscribing to topic \"%s\"...\n", receive_topic);
-            if (uMqttClientSubscribe(pContext, receive_topic, U_MQTT_QOS_AT_LEAST_ONCE) >= 0) {
-                uPortLog("Publishing \"%s\" to topic \"%s\"...\n", mqtt_payload, send_topic);
+            uPortLog("Subscribing to topic \"%s\" (QoS %u)...\n", receive_topic, qos_cfg);
+            if (uMqttClientSubscribe(pContext, receive_topic, qos_enum) >= 0) {
+                uPortLog("Publishing \"%s\" to topic \"%s\" (QoS %u)...\n", mqtt_payload, send_topic, qos_cfg);
   //-------------------------------------------------------------------------------                
-                timeoutStart = uTimeoutStart();
+         /*       timeoutStart = uTimeoutStart();
                 if (uMqttClientPublish(pContext, send_topic, mqtt_payload, strlen(mqtt_payload),
-                                       U_MQTT_QOS_AT_LEAST_ONCE, false) == 0) {
+                                       qos_enum, false) == 0) {*/
+// Decide retenção para o tópico de envio (telemetria):
+// neste momento, queremos que o tópico principal de dados NÃO seja retentivo,
+// então mqtt_should_retain(send_topic) retornará false (pois não termina com "/confirm").
+bool retain_flag_send = mqtt_should_retain(send_topic);
+
+                 timeoutStart = uTimeoutStart();
+                 if (uMqttClientPublish(pContext,
+                       send_topic,
+                       mqtt_payload,
+                       strlen(mqtt_payload),
+                       qos_enum,
+                       retain_flag_send) == 0) {                       
                     success = true;
                     uPortLog("Message successfully published on topic \"%s\".\n", send_topic);
-                    
-                    blink_set_profile(BLINK_PROFILE_DELIVERY_SUCCESS);//Mostra pelo LED que a mensagem foi enviada
                     
                     size_t payload_len = strlen(mqtt_payload);
                     ESP_LOGI(TAG, "MQTT Payload (%u bytes): %s",(unsigned)payload_len, mqtt_payload);
                     
-                    // Aguardar 5 segundos para dar tempo ao Node-RED enviar o comando
-                    uPortLog("Waiting 5 seconds for potential incoming messages...\n");
-                    uPortTaskBlock(5000);
-
+                    uPortLog("Checking for pending MQTT commands (retain/confirm)...\n");
+                    
                     // Processar mensagens recebidas
                     while ((uMqttClientGetUnread(pContext) > 0) && (returnCode == 0)) {
                         bufferSize = sizeof(buffer);
@@ -544,7 +619,7 @@ bool ucell_MqttClient_connection (uDeviceHandle_t devHandle){
             } else {
                 uPortLog("Failed to disconnect MQTT, proceeding with caution...\n");
             }
-            uPortTaskBlock(1000);
+            uPortTaskBlock(500);
         } else {
             uPortLog("Unable to connect to MQTT broker \"%s\"!\n", MY_BROKER);
         }
@@ -573,7 +648,6 @@ bool ucell_MqttClient_connection (uDeviceHandle_t devHandle){
         printf("++++MQTT SUCESSO++++\n");
         mqtt_publish_delivery=true;
     } else {
-		 blink_set_profile( BLINK_PROFILE_COMM_FAIL);
         printf("-----Não Teve Sucesso----\n");
         mqtt_publish_delivery=false;
     }

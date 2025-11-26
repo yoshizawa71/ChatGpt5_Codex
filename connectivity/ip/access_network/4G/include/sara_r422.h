@@ -82,6 +82,8 @@ void set_ppp_netif(esp_netif_t *netif);
 void DevLteConfig_init (void);
 
 int32_t cell_Net_Register_Connect(uDeviceHandle_t *pDevHandle);
+int32_t cell_OpenDevice_NoReg(uDeviceHandle_t *pDevHandle);
+
 int32_t cellNet_Close_CleanUp(uDeviceHandle_t devHandle);
 void init_LTE_System(void);
 //void Cell_NetConnect_Task (void* pvParameters);

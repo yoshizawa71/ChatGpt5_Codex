@@ -1,121 +1,343 @@
-#include "esp_log.h"
-#include "esp_netif.h"
-#include "u_port_ppp.h"
-#include "u_sock.h" // Para uSockIpAddress_t
-#include "esp_err.h"
-#include "datalogger_control.h" // Para get_apn(), get_lte_user(), get_lte_pw()
+/*
+ * ppp_control.c
+ *
+ * Controle centralizado do PPP LTE (SARA-R4/R41/R412/R422)
+ * com máquina de estados + task dedicada + fila de comandos.
+ *
+ * Autor: ChatGPT (Enterprise Edition)
+ */
 
+#include "ppp_control.h"
+#include "lte_ppp_link.h"
+
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_timer.h"  // esp_timer_get_time()
+
+// -----------------------------------------------------------------------------
+//  LOG
+// -----------------------------------------------------------------------------
 static const char *TAG = "ppp_control";
 
-// Handle global para o dispositivo (deve ser inicializado pelo chamador)
-static void *gDevHandle = NULL;
-static esp_netif_t *gPppNetif = NULL;
+// -----------------------------------------------------------------------------
+//  DEFINES
+// -----------------------------------------------------------------------------
+#define PPP_CTRL_TASK_STACK     (4096)
+#define PPP_CTRL_TASK_PRIO      (configMAX_PRIORITIES - 4)
+#define PPP_CTRL_QUEUE_LEN      (8)
 
-// Callback para receber dados PPP
-static void ppp_receive_callback(void *pDevHandle, const char *pData, size_t dataSize, void *pCallbackParam) {
-    ESP_LOGI(TAG, "Received %zu bytes via PPP", dataSize);
+// Timeout do estado STARTING -> CONNECTED (opcional)
+#define PPP_CTRL_CONNECT_TIMEOUT_MS   35000
+
+// -----------------------------------------------------------------------------
+//  ENUMS / TIPOS INTERNOS
+// -----------------------------------------------------------------------------
+
+// Comandos que chegam pela fila
+typedef enum {
+    PPP_CTRL_CMD_START = 1,
+    PPP_CTRL_CMD_STOP,
+    PPP_CTRL_CMD_SHUTDOWN   // Para destruir a task (opcional)
+} ppp_ctrl_cmd_t;
+
+// -----------------------------------------------------------------------------
+//  VARIÁVEIS ESTÁTICAS INTERNAS
+// -----------------------------------------------------------------------------
+static xQueueHandle      s_ctrlQueue        = NULL;
+static TaskHandle_t      s_ctrlTaskHandle   = NULL;
+static ppp_ctrl_state_t  s_state            = PPPC_STATE_DISCONNECTED;
+
+// Timestamp para timeout
+static uint64_t          s_stateStartTimeMs = 0;
+
+// “Futuros” parâmetros de reconexão (por enquanto só armazenados)
+static bool              s_autoReconnect    = false;
+static int               s_maxRetries       = 0;
+static int               s_retryDelayMs     = 0;
+
+// -----------------------------------------------------------------------------
+//  EVENTO PÚBLICO PARA OUTROS MÓDULOS
+// -----------------------------------------------------------------------------
+ESP_EVENT_DEFINE_BASE(PPP_CTRL_EVENT);
+
+// -----------------------------------------------------------------------------
+//  PROTÓTIPOS INTERNOS
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_task(void *param);
+static void ppp_ctrl_emit(ppp_ctrl_event_t evt);
+static void ppp_ctrl_process_state(void);
+static void ppp_ctrl_set_state(ppp_ctrl_state_t newState);
+static void ppp_ctrl_do_start(void);
+static void ppp_ctrl_do_stop(void);
+
+// -----------------------------------------------------------------------------
+//  EMISSOR DE EVENTOS
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_emit(ppp_ctrl_event_t evt)
+{
+    esp_event_post(PPP_CTRL_EVENT, evt, NULL, 0, portMAX_DELAY);
 }
 
-// Callback para abrir a conexão PPP
-static int32_t ppp_connect_callback(void *pDevHandle,
-                                    uPortPppReceiveCallback_t *pReceiveCallback,
-                                    void *pReceiveCallbackParam,
-                                    char *pReceiveData,
-                                    size_t receiveDataSize,
-                                    bool (*pKeepGoingCallback)(void *)) {
-    ESP_LOGI(TAG, "Opening PPP connection");
-    if (pReceiveData == NULL && pReceiveCallback != NULL) {
-        ESP_LOGI(TAG, "Allocating receive buffer of size %zu", receiveDataSize);
+// -----------------------------------------------------------------------------
+//  ALTERAÇÃO DO ESTADO + EVENTOS
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_set_state(ppp_ctrl_state_t newState)
+{
+    if (newState == s_state) {
+        return;
     }
-    return 0;
+
+    ESP_LOGI(TAG, "PPP CTRL state %d -> %d", s_state, newState);
+    s_state = newState;
+
+    switch (newState) {
+        case PPPC_STATE_DISCONNECTED:
+            ppp_ctrl_emit(PPP_CTRL_EVENT_STOPPED);
+            break;
+
+        case PPPC_STATE_STARTING:
+            ppp_ctrl_emit(PPP_CTRL_EVENT_STARTING);
+            s_stateStartTimeMs = esp_timer_get_time() / 1000ULL;
+            break;
+
+        case PPPC_STATE_CONNECTED:
+            ppp_ctrl_emit(PPP_CTRL_EVENT_CONNECTED);
+            break;
+
+        case PPPC_STATE_STOPPING:
+            ppp_ctrl_emit(PPP_CTRL_EVENT_STOPPING);
+            break;
+
+        case PPPC_STATE_FAILED:
+            ppp_ctrl_emit(PPP_CTRL_EVENT_FAILED);
+            break;
+    }
 }
 
-// Callback para fechar a conexão PPP
-static int32_t ppp_disconnect_callback(void *pDevHandle, bool pppTerminateRequired) {
-    ESP_LOGI(TAG, "Closing PPP connection");
-    if (pppTerminateRequired) {
-        ESP_LOGI(TAG, "Terminating PPP connection");
-    }
-    return 0;
-}
-
-// Callback para transmitir dados via PPP
-static int32_t ppp_transmit_callback(void *pDevHandle, const char *pData, size_t dataSize) {
-    ESP_LOGI(TAG, "Transmitting %zu bytes via PPP", dataSize);
-    return (int32_t)dataSize;
-}
-
-// Inicializa a conexão PPP
-esp_err_t init_ppp(void) {
- //   esp_err_t ret = ESP_OK;
-
-    // Verificar handles
-    if (gDevHandle == NULL || gPppNetif == NULL) {
-        ESP_LOGE(TAG, "Device handle or PPP netif not initialized");
-        return ESP_FAIL;
+// -----------------------------------------------------------------------------
+//  COMPORTAMENTO SOBRE COMANDO START
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_do_start(void)
+{
+    if (s_state == PPPC_STATE_CONNECTED) {
+        ESP_LOGW(TAG, "START ignorado: PPP já conectado.");
+        return;
     }
 
-    // Configurar callbacks PPP
-    ESP_LOGI(TAG, "Attaching PPP callbacks...");
-    int32_t attach_ret = uPortPppAttach(gDevHandle,
-                                        ppp_connect_callback,
-                                        ppp_disconnect_callback,
-                                        ppp_transmit_callback);
-    if (attach_ret != 0) {
-        ESP_LOGE(TAG, "Failed to attach PPP callbacks: %d", attach_ret);
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "PPP callbacks attached");
-
-    // Obter credenciais
-    const char *username = get_lte_user();
-    const char *password = get_lte_pw();
-    ESP_LOGI(TAG, "Using username: %s", username ? username : "NULL");
-    ESP_LOGI(TAG, "Using password: %s", password ? "****" : "NULL");
-
-    // Configurar parâmetros de conexão PPP
-    uPortPppAuthenticationMode_t authMode = U_PORT_PPP_AUTHENTICATION_MODE_PAP;
-
-    // Iniciar conexão PPP
-    ESP_LOGI(TAG, "Starting PPP connection...");
-    uSockIpAddress_t ipAddress = {0};
-    uSockIpAddress_t dnsPrimary = {0};
-    uSockIpAddress_t dnsSecondary = {0};
-    int32_t ppp_ret = uPortPppConnect(gDevHandle,
-                                      &ipAddress,
-                                      &dnsPrimary,
-                                      &dnsSecondary,
-                                      username,
-                                      password,
-                                      authMode);
-    if (ppp_ret != 0) {
-        ESP_LOGE(TAG, "Failed to connect PPP: %d", ppp_ret);
-        return ESP_FAIL;
+    if (s_state == PPPC_STATE_STARTING) {
+        ESP_LOGW(TAG, "START ignorado: já está em STARTING.");
+        return;
     }
 
-    // Logar IP atribuído
-    if (ipAddress.address.ipv4 != 0) {
-        ESP_LOGI(TAG, "Assigned IP: %d.%d.%d.%d",
-                 (ipAddress.address.ipv4 >> 24) & 0xFF,
-                 (ipAddress.address.ipv4 >> 16) & 0xFF,
-                 (ipAddress.address.ipv4 >> 8) & 0xFF,
-                 ipAddress.address.ipv4 & 0xFF);
+    ppp_ctrl_set_state(PPPC_STATE_STARTING);
+
+    // Chama o módulo de baixo nível
+    ESP_LOGI(TAG, "Chamando lte_ppp_start() via ppp_control...");
+    if (lte_ppp_start() == ESP_OK) {
+        // A conexão real só será confirmada pelo lte_ppp_link
+        // através de polling no state machine
+        ESP_LOGI(TAG, "lte_ppp_start() retornou OK, aguardando CONNECTED...");
     } else {
-        ESP_LOGW(TAG, "No IP address assigned");
+        ESP_LOGE(TAG, "falha lte_ppp_start()");
+        ppp_ctrl_set_state(PPPC_STATE_FAILED);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  COMPORTAMENTO SOBRE COMANDO STOP
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_do_stop(void)
+{
+    if (s_state == PPPC_STATE_DISCONNECTED) {
+        ESP_LOGW(TAG, "STOP ignorado: PPP já desligado.");
+        return;
     }
 
-    ESP_LOGI(TAG, "PPP initialized successfully");
+    ppp_ctrl_set_state(PPPC_STATE_STOPPING);
+    lte_ppp_stop();
+
+    // Estado final
+    ppp_ctrl_set_state(PPPC_STATE_DISCONNECTED);
+}
+
+// -----------------------------------------------------------------------------
+//  MÁQUINA DE ESTADOS (RODADA NA TASK)
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_process_state(void)
+{
+    int linkState = lte_ppp_get_state();
+
+    switch (s_state) {
+
+    case PPPC_STATE_STARTING:
+        if (linkState == LTE_PPP_STATE_CONNECTED) {
+            ppp_ctrl_set_state(PPPC_STATE_CONNECTED);
+        } else {
+            // Timeout opcional
+            {
+                uint64_t now = (esp_timer_get_time() / 1000ULL);
+                if (now - s_stateStartTimeMs > PPP_CTRL_CONNECT_TIMEOUT_MS) {
+                    ESP_LOGE(TAG, "Timeout esperando PPP CONNECTED");
+                    ppp_ctrl_set_state(PPPC_STATE_FAILED);
+                }
+            }
+        }
+        break;
+
+    case PPPC_STATE_CONNECTED:
+        if (linkState != LTE_PPP_STATE_CONNECTED) {
+            ESP_LOGW(TAG, "PPP caiu (linkDown) detectado pelo ppp_control");
+            ppp_ctrl_set_state(PPPC_STATE_FAILED);
+        }
+        break;
+
+    case PPPC_STATE_FAILED:
+        // Aguarda STOP ou novo START externo.
+        // (Aqui, no futuro, poderia entrar lógica de auto-reconexão)
+        break;
+
+    case PPPC_STATE_STOPPING:
+        // Aqui já chamamos stop, estado finalizado acima
+        break;
+
+    case PPPC_STATE_DISCONNECTED:
+    default:
+        break;
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  TASK PRINCIPAL DO PPP CONTROL
+// -----------------------------------------------------------------------------
+static void ppp_ctrl_task(void *param)
+{
+    (void)param;
+    ppp_ctrl_cmd_t cmd;
+
+    while (1) {
+        // Espera comando ou timeout para rodar state machine
+        if (xQueueReceive(s_ctrlQueue, &cmd, pdMS_TO_TICKS(500))) {
+            switch (cmd) {
+            case PPP_CTRL_CMD_START:
+                ppp_ctrl_do_start();
+                break;
+
+            case PPP_CTRL_CMD_STOP:
+                ppp_ctrl_do_stop();
+                break;
+
+            case PPP_CTRL_CMD_SHUTDOWN:
+                ESP_LOGI(TAG, "PPP Control SHUTDOWN solicitado. Encerrando task...");
+                vTaskDelete(NULL);
+                return;
+            }
+        }
+
+        // Poll da máquina de estados
+        ppp_ctrl_process_state();
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  API PÚBLICA
+// -----------------------------------------------------------------------------
+
+esp_err_t ppp_control_init(void)
+{
+    if (s_ctrlQueue != NULL && s_ctrlTaskHandle != NULL) {
+        ESP_LOGW(TAG, "PPP Control já inicializado.");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Inicializando serviço PPP Control...");
+
+    // Criar fila
+    s_ctrlQueue = xQueueCreate(PPP_CTRL_QUEUE_LEN, sizeof(ppp_ctrl_cmd_t));
+    if (!s_ctrlQueue) {
+        ESP_LOGE(TAG, "Falha ao criar fila PPP Control");
+        return ESP_FAIL;
+    }
+
+    // Criar a task
+    BaseType_t ok = xTaskCreate(
+        ppp_ctrl_task,
+        "ppp_ctrl_task",
+        PPP_CTRL_TASK_STACK,
+        NULL,
+        PPP_CTRL_TASK_PRIO,
+        &s_ctrlTaskHandle);
+
+    if (ok != pdPASS || !s_ctrlTaskHandle) {
+        ESP_LOGE(TAG, "Falha ao criar task PPP Control");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "PPP Control inicializado (task e fila criadas).");
     return ESP_OK;
 }
 
-// Configura o handle do dispositivo
-void set_ppp_device_handle(void *devHandle) {
-    ESP_LOGI(TAG, "Setting PPP device handle");
-    gDevHandle = devHandle;
+esp_err_t ppp_control_start(void)
+{
+    if (!s_ctrlQueue) {
+        return ESP_FAIL;
+    }
+    ppp_ctrl_cmd_t cmd = PPP_CTRL_CMD_START;
+    xQueueSend(s_ctrlQueue, &cmd, 0);
+    return ESP_OK;
 }
 
-// Configura a interface de rede PPP
-void set_ppp_netif(esp_netif_t *netif) {
-    ESP_LOGI(TAG, "Setting PPP netif");
-    gPppNetif = netif;
+esp_err_t ppp_control_stop(void)
+{
+    if (!s_ctrlQueue) {
+        return ESP_FAIL;
+    }
+    ppp_ctrl_cmd_t cmd = PPP_CTRL_CMD_STOP;
+    xQueueSend(s_ctrlQueue, &cmd, 0);
+    return ESP_OK;
+}
+
+esp_err_t ppp_control_shutdown(void)
+{
+    if (!s_ctrlQueue) {
+        return ESP_FAIL;
+    }
+    ppp_ctrl_cmd_t cmd = PPP_CTRL_CMD_SHUTDOWN;
+    xQueueSend(s_ctrlQueue, &cmd, portMAX_DELAY);
+    return ESP_OK;
+}
+
+ppp_ctrl_state_t ppp_control_get_state(void)
+{
+    return s_state;
+}
+
+bool ppp_control_is_connected(void)
+{
+    return (s_state == PPPC_STATE_CONNECTED);
+}
+
+void ppp_control_set_auto_reconnect(bool enable)
+{
+    s_autoReconnect = enable;
+    ESP_LOGI(TAG, "Auto-reconnect PPP Control: %s", enable ? "ON" : "OFF");
+}
+
+void ppp_control_set_retry_params(int max_retries, int retry_delay_ms)
+{
+    s_maxRetries   = max_retries;
+    s_retryDelayMs = retry_delay_ms;
+    ESP_LOGI(TAG, "PPP Control retry params: max=%d, delay=%d ms",
+             s_maxRetries, s_retryDelayMs);
+}
+
+esp_netif_t *ppp_control_get_netif(void)
+{
+    // Apenas delega para o módulo de link PPP, caso ele exponha o netif.
+    return lte_ppp_get_netif();
 }

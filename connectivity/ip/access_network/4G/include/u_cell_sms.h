@@ -54,6 +54,10 @@ int32_t cellSmsRead(uDeviceHandle_t devHandle,
                     char *outNumber, size_t numberMaxLen,
                     char *outText,   size_t textMaxLen);
 
+int32_t cellSmsReadAndLog(uDeviceHandle_t devHandle,
+                          size_t index,
+                          bool deleteAfterRead);
+                          
 /**
  * Delete an SMS by index.
  *

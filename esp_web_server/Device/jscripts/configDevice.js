@@ -38,21 +38,27 @@
 
   // --- Atualiza dropdown de frequência de envio segundo deep sleep ---
   function updateSendFreqOptions() {
-    const min = parseInt($('#deep_sleep_period').val(), 10) || 1;
-    const $sel = $('#send_freq');
-    const current = parseInt($sel.val(), 10);
+  const min = parseInt($('#deep_sleep_period').val(), 10) || 1;
+  const $sel = $('#send_freq');
+  const current = parseInt($sel.val(), 10);
 
-    $sel.empty();
-    SEND_OPTIONS.filter(opt => opt.value >= min)
-      .forEach(opt => $sel.append($('<option>').val(opt.value).text(opt.label)));
+  $sel.empty();
 
-    if (current >= min && SEND_OPTIONS.some(opt => opt.value === current)) {
-      $sel.val(current);
-    } else {
-      const first = SEND_OPTIONS.find(opt => opt.value >= min).value;
-      $sel.val(first);
+  // Agora filtra não só >= min, mas também múltiplos exatos
+  SEND_OPTIONS.filter(opt => opt.value >= min && opt.value % min === 0)
+    .forEach(opt => $sel.append($('<option>').val(opt.value).text(opt.label)));
+
+  // Seleciona de volta o valor atual se continuar válido
+  if (current >= min && current % min === 0) {
+    $sel.val(current);
+  } else {
+    // Senão, coloca o menor válido
+    const first = SEND_OPTIONS.find(opt => opt.value >= min && opt.value % min === 0);
+    if (first) {
+      $sel.val(first.value);
     }
   }
+}
 
   // --- Atualiza texto e cor de status do toggle ---
   function updateDeviceStatus(isOn) {
@@ -98,7 +104,9 @@
       $('#time').val(obj.time);
       $('#config_factory').prop('checked', obj.finished_factory);
       $('#always_on').prop('checked', obj.always_on);
-
+  // === novo: modo TimeStamp ===
+      $('#timestamp_mode').prop('checked', !!obj.timestamp_mode);
+      
       // **Novo: popula toggle e status**
       $('#device_toggle').prop('checked', obj.device_active);
       updateDeviceStatus(obj.device_active);
@@ -175,7 +183,7 @@
       time:              $('#time').val(),
       finished_factory:  $('#config_factory').prop('checked'),
       always_on:         $('#always_on').prop('checked'),
-
+      timestamp_mode:    $('#timestamp_mode').prop('checked'),
       // **Novo: estado do toggle**
       device_active:     $('#device_toggle').prop('checked')
     };

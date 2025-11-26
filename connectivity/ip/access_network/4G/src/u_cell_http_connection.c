@@ -85,6 +85,7 @@
 #include "cJSON.h"
 
 #include "sdmmc_driver.h"
+#include "lte_payload_builder.h"
 
 
 /* ----------------------------------------------------------------
@@ -518,15 +519,6 @@ static void cellFileRead(uDeviceHandle_t devHandle)
         }
     }
 
-    // Do the standard postamble, leaving the module on for the next
-    // test to speed things up
-   // uCellTestPrivatePostamble(&gHandles, false);
-
-    // Check for resource leaks
-   // uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
- /*   resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
-    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
-    U_PORT_TEST_ASSERT(resourceCount <= 0);*/
 }
 
 /* ----------------------------------------------------------------
@@ -657,7 +649,7 @@ printf(">>>>>>Last Write Index= %d\n",rec_index.last_write_idx);*/
 
 
 
-esp_err_t err = json_data_payload(server_payload, sizeof(server_payload),rec_index, &counter, &cursor_position);
+esp_err_t err = lte_json_data_payload(server_payload, sizeof(server_payload),rec_index, &counter, &cursor_position);
     
     if (err != ESP_OK) {
         printf("Erro ao montar o payload JSON: %d", err);
@@ -724,7 +716,6 @@ printf(">>>>>>CURSOR POSITION<<<<<<%d \n", cursor_position);
  
     if(success)
     {
-		blink_set_profile(BLINK_PROFILE_DELIVERY_SUCCESS);//Mostra pelo LED que a mensagem foi enviada
 		time_t now;
         time(&now);
         set_last_data_sent(now);
@@ -742,7 +733,6 @@ printf(">>>>>>CURSOR POSITION<<<<<<%d \n", cursor_position);
     }
     else
     {
-		blink_set_profile( BLINK_PROFILE_COMM_FAIL);
 		printf("-----Não Teve Sucesso----\n");
         http_request_delivery=false;
     }
@@ -926,16 +916,10 @@ printf(">>>>>>CURSOR POSITION<<<<<<%d \n", cursor_position);
         U_TEST_PRINT_LINE("module does not support HTTP, not testing it.");
     }
 
-    // Do the standard postamble, leaving the module on for the next
-    // test to speed things up
-    uCellTestPrivatePostamble(&gHandles, false);
-
-    // Check for resource leaks
-    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
-    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
-    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
-    U_PORT_TEST_ASSERT(resourceCount <= 0);
-    
+// Em modo de produção, NÃO encerramos a API celular aqui.
+    // Apenas retornamos se a requisição HTTP foi entregue ou não.
+    // O controle de desligar/modem/PSM/UPSV fica centralizado
+    // no 4G_system_control.c (lte_power_apply(), cellNet_Close_CleanUp(), etc.).
     return http_request_delivery;
 }
 

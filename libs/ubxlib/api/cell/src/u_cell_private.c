@@ -363,7 +363,8 @@ const uCellPrivateModule_t gUCellPrivateModuleList[] = {
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_MQTTSN_SECURITY)                       |
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_FOTA)                                  |
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_UART_POWER_SAVING)                     |
-         (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_CMUX)                                  |
+         (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_DTR_POWER_SAVING)                      |  //Introduzido aqui como correção
+         (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_CMUX)                                  |                         
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_CMUX_CHANNEL_CLOSE)                    |
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_SNR_REPORTED)                          |
          (1ULL << (int32_t) U_CELL_PRIVATE_FEATURE_LWM2M)                                 |

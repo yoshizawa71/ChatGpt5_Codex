@@ -60,10 +60,10 @@
     </tr>
     <tr>
       <td>Datalogger: <input type="text" id="ssid_ap" name="ssid_ap" value="" size="15" maxlength="15"></td>
-      <td colspan="2"><input type="text" id="wifi_pw_ap" name="wifi_pw_ap" value="" size="15" maxlength="15">
+      <td colspan="2"><input type="password" id="wifi_pw_ap" name="wifi_pw_ap" value="" size="15" maxlength="15">
      <input type="checkbox" onclick="mostrarOcultarSenha()" id="hide_pw">
 <label for="hide_pw">
-  <span class="eye-icon">👁️</span>
+  <span id="eye_icon" class="eye-icon">👁️</span>
 </label>
     </tr>
     <tr>
@@ -137,8 +137,16 @@ quarto  <input id="send_time4" name="send_time4" type="number" min="0" max="23" 
       <td colspan="2">
         <input id="time" type="text" name="time" value="" size="20" maxlength="20">
       </td>
+      
     </tr>
- 
+        <tr>
+      <th rowspan="1">TimeStamp</th>
+      <td colspan="2">
+        <input type="checkbox" id="timestamp_mode" name="timestamp_mode">
+        <label for="timestamp_mode">TimeStamp</label>
+      </td>
+    </tr>
+    
  <tr>   
       <th rowspan="1">Configuração do Sistema </th>
       <td>

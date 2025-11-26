@@ -1,33 +1,53 @@
-function mostrarOcultarSenha() {
-    var senha    = document.getElementById("wifi_pw_ap");
-    var checkbox = document.getElementById("hide_pw");
-    var eye      = document.getElementById("eye_icon");
+function aplicarVisibilidadeSenha(hide) {
+    var senha = document.getElementById("wifi_pw_ap");
+    var eye   = document.getElementById("eye_icon");
 
-    if (checkbox.checked) {
+    if (!senha || !eye) {
+        return;
+    }
+
+    if (hide) {
+        // esconder senha
         senha.type = "password";
         eye.style.textDecoration = "line-through";
-        localStorage.setItem("hidePassword", "true");
     } else {
+        // mostrar senha
         senha.type = "text";
         eye.style.textDecoration = "none";
-        localStorage.setItem("hidePassword", "false");
     }
 }
 
-// Restaura o estado do checkbox, do campo e do ícone ao carregar
-document.addEventListener("DOMContentLoaded", function() {
-    var senha        = document.getElementById("wifi_pw_ap");
-    var checkbox     = document.getElementById("hide_pw");
-    var eye          = document.getElementById("eye_icon");
-    var hidePassword = localStorage.getItem("hidePassword");
-
-    if (hidePassword === "true") {
-        checkbox.checked = true;
-        senha.type       = "password";
-        eye.style.textDecoration = "line-through";
-    } else {
-        checkbox.checked = false;
-        senha.type       = "text";
-        eye.style.textDecoration = "none";
+function mostrarOcultarSenha() {
+    var checkbox = document.getElementById("hide_pw");
+    if (!checkbox) {
+        return;
     }
+
+    var hide = checkbox.checked;  // MARCADO = esconder
+    aplicarVisibilidadeSenha(hide);
+
+    // persiste estado
+    localStorage.setItem("hidePasswordAp", hide ? "true" : "false");
+}
+
+// Restaura o estado ao carregar a página
+document.addEventListener("DOMContentLoaded", function() {
+    var checkbox = document.getElementById("hide_pw");
+
+    if (!checkbox) {
+        return;
+    }
+
+    var stored = localStorage.getItem("hidePasswordAp");
+    var hide;
+
+    if (stored === null) {
+        // primeira vez: começa escondido
+        hide = true;
+    } else {
+        hide = (stored === "true");
+    }
+
+    checkbox.checked = hide;
+    aplicarVisibilidadeSenha(hide);
 });

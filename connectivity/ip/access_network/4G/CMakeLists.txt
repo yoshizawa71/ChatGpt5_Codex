@@ -9,7 +9,11 @@ set(srcs
         "src/u_cell_net_reg.c"
         "src/ppp_control.c"
         "src/u_cell_sms.c"
-        "src/connectivity.c"   
+        "src/connectivity.c"
+        "src/u_cell_power_strategy.c"
+        "src/lte_ppp_link.c"
+        "src/lte_ppp_test.c"
+        "src/lte_payload_builder.c"
       )
 
 # Registro do componente

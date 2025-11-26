@@ -7,6 +7,7 @@
 #include "modbus_rtu_master.h"
 #include "modbus_guard_session.h"
 #include "datalogger_driver.h"
+#include "rs485_registry.h"  
 
 // Contexto usado no iterate
 typedef struct {
@@ -28,7 +29,7 @@ static inline void _force_link_rs485_registry_adapter(void) {
  * lidos do config_driver.c). Estas versões weak permitem compilar hoje.
  */
 // energy_meter.c — mude W para D nas WEAK
-__attribute__((weak)) bool rs485_registry_get_channel_addr(uint8_t channel, uint8_t *out_addr)
+/*__attribute__((weak)) bool rs485_registry_get_channel_addr(uint8_t channel, uint8_t *out_addr)
 {
     ESP_LOGD("ENERGY", "WEAK get_channel_addr() chamada (ch=%u) => sem cadastro", channel);
     (void)channel; (void)out_addr;
@@ -45,7 +46,11 @@ __attribute__((weak)) int rs485_registry_iterate_configured(rs485_iter_cb_t cb, 
     ESP_LOGD("ENERGY", "WEAK iterate_configured() chamada => retornando 0");
     (void)cb; (void)user; return 0;
 }
+*/
 
+bool rs485_registry_get_channel_addr(uint8_t channel, uint8_t *out_addr);
+int  rs485_registry_get_channel_phase_count(uint8_t channel);
+int  rs485_registry_iterate_configured(bool (*cb)(uint8_t, uint8_t, void*), void *user);
 
 /* ---------------------- SD: saída no formato desejado ----------------------
  * Nova rotina no sdcard_mmc.c escreverá: DATA | HORA | CANAL(string) | DADOS(valor)

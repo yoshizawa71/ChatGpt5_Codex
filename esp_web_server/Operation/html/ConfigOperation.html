@@ -98,9 +98,13 @@
       <option value="12">12</option>
     </select>
   </td>
-  <td>
-    <input type="text" id="addr_input" class="addr-input" placeholder="e.g. 0x05 ou 5">
-  </td>
+<td>
+  <select id="addr_input" class="addr-input">
+    <option value="">Selecione…</option>
+    <!-- as opções reais 1..N serão preenchidas via JS em configRS485.js -->
+  </select>
+</td>
+
   <td>
     <select id="type_input" class="sensor-type">
   <option value="">Selecione…</option>

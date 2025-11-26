@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "esp_log.h"
 #include "xy_md02_driver.h"              // temperature_rs485_probe/read  (XY-MD02)
 #include "energy_jsy_mk_333_driver.h"    // jsy_mk333_probe               (JSY-MK-333)
 
@@ -197,11 +198,13 @@ bool rs485_registry_probe_any(uint8_t addr,
                               uint8_t *out_used_fc,
                               const char **out_driver_name)
 {
+	ESP_LOGW("RS485_REG_PROBE", "probe_any ENTRY: addr=%u", (unsigned)addr);
     if (out_type)      *out_type      = RS485_TYPE_INVALID;
     if (out_subtype)   *out_subtype   = RS485_SUBTYPE_NONE;
     if (out_used_fc)   *out_used_fc   = 0;
     if (out_driver_name) *out_driver_name = NULL;
 
+ESP_LOGW("RS485_REG_PROBE", "tentando XY_MD02 em addr=%u", (unsigned)addr);
     /* 1) XY-MD02 (Termo/UR) */
     uint8_t fc = 0;
     if (temperature_rs485_probe(addr, &fc) > 0) {              /* XY probe */  /* :contentReference[oaicite:1]{index=1} */
@@ -209,9 +212,13 @@ bool rs485_registry_probe_any(uint8_t addr,
         if (out_subtype)   *out_subtype = RS485_SUBTYPE_NONE;
         if (out_used_fc)   *out_used_fc = fc;
         if (out_driver_name) *out_driver_name = "XY_MD02";
+        ESP_LOGW("RS485_REG_PROBE",
+             "FOUND XY_MD02: addr=%u fc=0x%02X",
+             (unsigned)addr, (unsigned)fc);
         return true;
     }
 
+ESP_LOGW("RS485_REG_PROBE", "tentando JSY_MK333 em addr=%u", (unsigned)addr);
     /* 2) JSY-MK-333 (Energia) — usa um “mapa” default até você ajustar */
     jsy_map_t map = jsy_mk333_default_map();
     fc = 0;
@@ -220,10 +227,14 @@ bool rs485_registry_probe_any(uint8_t addr,
         if (out_subtype)   *out_subtype = RS485_SUBTYPE_MONOFASICO; // placeholder
         if (out_used_fc)   *out_used_fc = fc;
         if (out_driver_name) *out_driver_name = "JSY_MK_333";
+        ESP_LOGW("RS485_REG_PROBE",
+             "FOUND JSY_MK333: addr=%u fc=0x%02X",
+             (unsigned)addr, (unsigned)fc);
         return true;
     }
 
     /* Acrescente aqui outros probes de drivers futuros */
-
+ESP_LOGW("RS485_REG_PROBE",
+         "probe_any: nenhum driver reconheceu addr=%u", (unsigned)addr);
     return false; // nenhum driver reconheceu
 }

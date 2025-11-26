@@ -22,9 +22,9 @@
  * of another module should be included here; otherwise
  * please keep #includes to your .c files. */
 
-#include "../../../common_api/device/api/u_device.h"
-#include "../../../common_api/mqtt_client/api/u_mqtt_common.h"
-#include "../../../common_api/security/api/u_security_tls.h"
+#include "u_device.h"
+#include "u_mqtt_common.h"
+#include "u_security_tls.h"
 
 /** \addtogroup MQTT-Client MQTT Client
  *  @{
@@ -52,7 +52,8 @@ extern "C" {
  * at 5 seconds.
  */
 //# define U_MQTT_CLIENT_RESPONSE_WAIT_SECONDS 120
-# define U_MQTT_CLIENT_RESPONSE_WAIT_SECONDS 60
+//# define U_MQTT_CLIENT_RESPONSE_WAIT_SECONDS 60
+# define U_MQTT_CLIENT_RESPONSE_WAIT_SECONDS 30
 #endif
 
 /** The defaults for an MQTT connection, see #uMqttClientConnection_t.
