@@ -160,6 +160,7 @@ static esp_err_t rs485_config_get_handler(httpd_req_t *req);
 static esp_err_t rs485_config_post_handler(httpd_req_t *req);
 static esp_err_t rs485_ping_get_handler(httpd_req_t *req);
 static esp_err_t rs485_config_delete_handler(httpd_req_t *req);
+static esp_err_t rs485_program_addr_post_handler(httpd_req_t *req);
 
 //------------------------------------------------------------------
 
@@ -665,6 +666,15 @@ httpd_uri_t rs485_register_post_uri = {
     .user_ctx = rest_context
 };
 httpd_register_uri_handler(server, &rs485_register_post_uri);
+
+    // ---------------- RS485 PROGRAM ADDRESS (POST) ----------------
+    httpd_uri_t rs485_program_addr_uri = {
+        .uri      = "/rs485ProgramAddr",
+        .method   = HTTP_POST,
+        .handler  = rs485_program_addr_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &rs485_program_addr_uri);
 
 
 // ---------------- RS485 PING (GET) ----------------
@@ -1810,6 +1820,9 @@ static esp_err_t rs485_auto_bind_or_readdress(int                requested_chann
                                               int               *io_final_addr,
                                               bool              *out_readdress_done)
 {
+    (void)requested_channel;
+    (void)requested_subtype_str;
+
     if (!io_final_addr) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -1817,159 +1830,127 @@ static esp_err_t rs485_auto_bind_or_readdress(int                requested_chann
         *out_readdress_done = false;
     }
 
-    // Valor default: usa o endereço escolhido pelo usuário
     *io_final_addr = requested_addr;
 
-    // Converte o tipo string para enum do registry
     rs485_type_t req_type = rs485_type_from_str(requested_type_str);
     if (req_type == RS485_TYPE_INVALID) {
-        ESP_LOGW("RS485_AUTO",
-                 "Tipo RS485 invalido/nao suportado para auto-bind: '%s'",
-                 requested_type_str ? requested_type_str : "(null)");
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Por enquanto, só tentamos auto-bind para medidor de ENERGIA (JSY-MK-333)
+    // Auto-bind apenas para JSY (energia) neste momento
     if (req_type != RS485_TYPE_ENERGIA) {
-        ESP_LOGI("RS485_AUTO",
-                 "Auto-bind: tipo '%s' ainda nao suportado (req_type=%d). "
-                 "Usando endereco solicitado sem reenderecar.",
-                 requested_type_str, (int)req_type);
         return ESP_OK;
     }
 
-    // Sanidade de faixa
     if (requested_addr < 1 || requested_addr > 247) {
-        ESP_LOGW("RS485_AUTO",
-                 "requested_addr fora de faixa: %d (esperado 1..247).",
-                 requested_addr);
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Se endereço já está em uso no registry, não fazemos auto-bind aqui.
     if (rs485_addr_is_used(map, count, (uint8_t)requested_addr)) {
-        ESP_LOGW("RS485_AUTO",
-                 "requested_addr=%d ja esta cadastrado. "
-                 "Nao sera feito auto-bind/reenderecamento.",
-                 requested_addr);
         return ESP_ERR_INVALID_STATE;
     }
 
-    // -------- Scan leve no barramento, ignorando enderecos ja cadastrados --------
-    const uint8_t SCAN_MIN_ADDR = 1;
-    const uint8_t SCAN_MAX_ADDR = 32;  // faixa enxuta para manter ping rapido
-
-    int       found_addr = -1;  // -1 = nenhum, -2 = mais de um
-    uint8_t   found_fc   = 0;
-    const char *found_drv = NULL;
-
-    for (uint8_t addr = SCAN_MIN_ADDR; addr <= SCAN_MAX_ADDR; ++addr) {
-        // Não tente "descobrir" sensores que já estão cadastrados (antigos)
-        if (rs485_addr_is_used(map, count, addr)) {
-            continue;
-        }
-
-        rs485_type_t     probed_type    = RS485_TYPE_INVALID;
-        rs485_subtype_t  probed_subtype = RS485_SUBTYPE_NONE;
-        uint8_t          used_fc        = 0;
-        const char      *drv_name       = NULL;
-
-        bool ok = rs485_registry_probe_any(addr,
-                                           &probed_type,
-                                           &probed_subtype,
-                                           &used_fc,
-                                           &drv_name);
-        if (!ok) {
-            continue; // nada reconhecido neste endereço
-        }
-
-        // Só nos interessam dispositivos do mesmo tipo (energia/JSY)
-        if (probed_type != req_type) {
-            ESP_LOGI("RS485_AUTO",
-                     "SCAN: ignorando addr=%u (tipo=%d diferente do requisitado %d).",
-                     (unsigned)addr, (int)probed_type, (int)req_type);
-            continue;
-        }
-
-        ESP_LOGI("RS485_AUTO",
-                 "SCAN: candidato encontrado addr=%u tipo=%d drv=%s fc=0x%02X",
-                 (unsigned)addr, (int)probed_type,
-                 drv_name ? drv_name : "NULL", (unsigned)used_fc);
-
-        if (found_addr < 0) {
-            found_addr = addr;
-            found_fc   = used_fc;
-            found_drv  = drv_name;
-        } else {
-            // Já havia um candidato -> mais de um dispositivo novo de mesmo tipo
-            found_addr = -2;
-            break;
+    // Monta lista de endereços já cadastrados para o driver ignorar no scan
+    uint8_t used_addrs[RS485_MAX_SENSORS] = {0};
+    size_t used_cnt = 0;
+    for (size_t i = 0; i < count && used_cnt < RS485_MAX_SENSORS; ++i) {
+        if (map[i].address >= 1 && map[i].address <= 247) {
+            used_addrs[used_cnt++] = map[i].address;
         }
     }
 
-    if (found_addr == -1) {
-        ESP_LOGI("RS485_AUTO",
-                 "SCAN: nenhum novo dispositivo de tipo '%s' encontrado. "
-                 "Usando endereco solicitado=%d sem reenderecar.",
-                 requested_type_str, requested_addr);
+    esp_err_t drv = jsy_mk333_auto_program_single(used_addrs,
+                                                  used_cnt,
+                                                  requested_addr,
+                                                  io_final_addr,
+                                                  out_readdress_done);
+    return drv;
+}
+
+static const char *rs485_autobind_err_to_str(esp_err_t err)
+{
+    switch (err) {
+    case ESP_ERR_NOT_FOUND:     return "rs485_device_not_found";
+    case ESP_ERR_INVALID_STATE: return "rs485_conflict";
+    case ESP_ERR_INVALID_ARG:   return "invalid_params";
+    default:                    return "rs485_autobind_failed";
+    }
+}
+
+// POST /rs485ProgramAddr {channel, address, type, subtype}
+static esp_err_t rs485_program_addr_post_handler(httpd_req_t *req)
+{
+    update_last_interaction();
+
+    char buf[256] = {0};
+    int to_read = req->content_len;
+    if (to_read <= 0 || to_read >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid_body_length");
         return ESP_OK;
     }
 
-    if (found_addr == -2) {
-        ESP_LOGW("RS485_AUTO",
-                 "SCAN: mais de um novo dispositivo de tipo '%s' encontrado. "
-                 "Nao sera feito auto-bind/reenderecamento automatico.",
-                 requested_type_str);
-        return ESP_ERR_INVALID_STATE;
+    int r = httpd_req_recv(req, buf, to_read);
+    if (r <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body_read_failed");
+        return ESP_OK;
     }
+    buf[r] = '\0';
 
-    // Aqui: exatamente 1 candidato "novo" do mesmo tipo
-    ESP_LOGI("RS485_AUTO",
-             "SCAN: unico dispositivo novo encontrado em addr=%d (drv=%s fc=0x%02X).",
-             found_addr, found_drv ? found_drv : "NULL", (unsigned)found_fc);
-
-    // Se ele já estiver no endereço solicitado, perfeito: nada para reendereçar
-    if (found_addr == requested_addr) {
-        ESP_LOGI("RS485_AUTO",
-                 "Auto-bind: dispositivo ja esta no endereco solicitado=%d. "
-                 "Nenhuma alteracao de endereco necessaria.",
-                 requested_addr);
-        *io_final_addr = requested_addr;
-        if (out_readdress_done) {
-            *out_readdress_done = false;
-        }
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid_json");
         return ESP_OK;
     }
 
-    // Caso contrario, tentamos reprogramar o endereco do JSY-MK-333
-    ESP_LOGW("RS485_AUTO",
-             "Auto-bind: dispositivo do tipo '%s' encontrado em addr=%d, "
-             "mas usuario pediu addr=%d. Tentando reenderecar JSY...",
-             requested_type_str, found_addr, requested_addr);
+    int ch = cJSON_GetObjectItem(root, "channel") ? cJSON_GetObjectItem(root, "channel")->valueint : -1;
+    int addr = cJSON_GetObjectItem(root, "address") ? cJSON_GetObjectItem(root, "address")->valueint : -1;
+    const char *type = cJSON_GetObjectItem(root, "type") ? cJSON_GetObjectItem(root, "type")->valuestring : NULL;
+    const char *subtype = cJSON_GetObjectItem(root, "subtype") ? cJSON_GetObjectItem(root, "subtype")->valuestring : NULL;
 
-    int rc = jsy_mk333_change_address((uint8_t)found_addr, (uint8_t)requested_addr);
-    if (rc == 0) {
-        ESP_LOGW("RS485_AUTO",
-                 "Reenderecamento JSY concluido: %d -> %d. "
-                 "Lembre-se de DESLIGAR/LIGAR o JSY para efetivar o novo endereco.",
-                 found_addr, requested_addr);
-        *io_final_addr = requested_addr;
-        if (out_readdress_done) {
-            *out_readdress_done = true;
-        }
+    if (ch <= 0 || addr < 1 || addr > 247 || !type) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid_params");
         return ESP_OK;
+    }
+
+    sensor_map_t map[RS485_MAX_SENSORS] = {0};
+    size_t count = 0;
+    (void) load_rs485_config(map, &count);
+
+    int final_addr = addr;
+    bool readdr = false;
+    esp_err_t err = rs485_auto_bind_or_readdress(ch,
+                                                 addr,
+                                                 type,
+                                                 subtype,
+                                                 map,
+                                                 count,
+                                                 &final_addr,
+                                                 &readdr);
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json_oom");
+        return ESP_OK;
+    }
+
+    if (err == ESP_OK) {
+        cJSON_AddBoolToObject(resp, "ok", true);
+        cJSON_AddNumberToObject(resp, "final_addr", final_addr);
+        cJSON_AddBoolToObject(resp, "readdress_done", readdr);
     } else {
-        ESP_LOGE("RS485_AUTO",
-                 "Falha ao reenderecar JSY de %d para %d (rc=%d). "
-                 "Mantendo endereco atual=%d.",
-                 found_addr, requested_addr, rc, found_addr);
-        *io_final_addr = found_addr;
-        if (out_readdress_done) {
-            *out_readdress_done = false;
-        }
-        // mapeia genericamente para ESP_FAIL; se quiser, pode mapear rc específico
-        return ESP_FAIL;
+        cJSON_AddBoolToObject(resp, "ok", false);
+        cJSON_AddStringToObject(resp, "error", rs485_autobind_err_to_str(err));
     }
+
+    char *out = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out ? out : "{\"ok\":false}");
+    free(out);
+    cJSON_Delete(resp);
+    cJSON_Delete(root);
+    return ESP_OK;
 }
 
 // ===== handler: GET /rs485ConfigDelete?channel=X&address=Y =====

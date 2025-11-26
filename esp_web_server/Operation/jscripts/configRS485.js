@@ -186,6 +186,36 @@ async function addSensorFromInputs() {
 
   const isEnergy = (type === 'energia');
 
+  let finalAddr = addr;
+
+  if (isEnergy) {
+    try {
+      const res = await fetch('/rs485ProgramAddr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: ch, address: addr, type, subtype })
+      });
+
+      const j = await res.json().catch(() => ({}));
+      if (!(res.ok && j && j.ok === true)) {
+        const msg = (j && j.error) ? String(j.error) : 'Falha ao programar endereço do JSY.';
+        alert(msg);
+        return;
+      }
+
+      if (typeof j.final_addr === 'number') {
+        finalAddr = j.final_addr;
+      }
+
+      if (j.readdress_done) {
+        alert('Endereço do medidor JSY atualizado com sucesso.');
+      }
+    } catch (e) {
+      alert('Erro ao contatar /rs485ProgramAddr.');
+      return;
+    }
+  }
+
   // Regras de ping:
   // - Para tipos normais: exige LED verde (ping estável).
   // - Para energia (JSY): permite continuar mesmo sem verde, com confirmação.
@@ -212,7 +242,7 @@ async function addSensorFromInputs() {
     const res = await fetch('/rs485ConfigSave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sensors: [{ channel: ch, address: addr, type, subtype }] })
+      body: JSON.stringify({ sensors: [{ channel: ch, address: finalAddr, type, subtype }] })
     });
 
     const j = await res.json().catch(() => ({}));
@@ -228,7 +258,7 @@ async function addSensorFromInputs() {
   }
 
   // Sucesso: atualiza estado local
-  sensorMap.push({ channel: ch, address: addr, type, subtype });
+  sensorMap.push({ channel: ch, address: finalAddr, type, subtype });
   refreshChannelOptions();
   refreshAddressOptions();
   updateSensorStatusList();

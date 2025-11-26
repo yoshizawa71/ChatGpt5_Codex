@@ -63,6 +63,27 @@ static inline jsy_map_t jsy_mk333_default_map(void) {
  */
 int jsy_mk333_change_address(uint8_t old_addr, uint8_t new_addr);
 
+/*
+ * Auto-programa (auto-bind) um único JSY-MK-333 no barramento.
+ *
+ * - used_addrs/used_count: lista de endereços já cadastrados (serão ignorados no scan).
+ * - requested_addr: endereço desejado pelo usuário.
+ * - io_final_addr: retorna o endereço efetivo usado após a operação.
+ * - out_readdress_done: true se houve mudança de endereço.
+ *
+ * Retorno:
+ *   ESP_OK               -> sucesso (encontrou exatamente 1 JSY e, se necessário, reendereçou)
+ *   ESP_ERR_NOT_FOUND    -> nenhum JSY novo encontrado no range de scan
+ *   ESP_ERR_INVALID_STATE-> mais de um JSY novo encontrado (conflito)
+ *   ESP_ERR_INVALID_ARG  -> parâmetros inválidos
+ *   ESP_FAIL / outro     -> falha ao reendereçar ou comunicar
+ */
+esp_err_t jsy_mk333_auto_program_single(const uint8_t *used_addrs,
+                                        size_t         used_count,
+                                        int            requested_addr,
+                                        int           *io_final_addr,
+                                        bool          *out_readdress_done);
+
 
 /* Tenta detectar o FC e verificar se responde a “algum” registrador do mapa. */
 int jsy_mk333_probe(uint8_t addr, jsy_map_t *map, uint8_t *used_fc);
