@@ -11,8 +11,26 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "mbcontroller.h"   // se não estiver sendo incluído por modbus_rtu_master.h
+#include <string.h>
 
 static const char *TAG = "JSY_MK333";
+
+// Range reduzido de scan para evitar travar o handler HTTP
+#ifndef JSY_AUTOPROG_SCAN_MIN
+#define JSY_AUTOPROG_SCAN_MIN  (1)
+#endif
+#ifndef JSY_AUTOPROG_SCAN_MAX
+#define JSY_AUTOPROG_SCAN_MAX  (12)
+#endif
+
+static bool addr_is_used(uint8_t addr, const uint8_t *list, size_t count)
+{
+    if (!list || count == 0) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (list[i] == addr) return true;
+    }
+    return false;
+}
 
 /* Helpers p/ ler registrador único c/ FC configurável */
 static bool read_one(jsy_fc_t fc, uint8_t addr, uint16_t reg, uint16_t *out)
@@ -214,5 +232,108 @@ int jsy_mk333_change_address(uint8_t old_addr, uint8_t new_addr)
              (unsigned)new_addr);
 
     return 0;
+}
+
+esp_err_t jsy_mk333_auto_program_single(const uint8_t *used_addrs,
+                                        size_t         used_count,
+                                        int            requested_addr,
+                                        int           *io_final_addr,
+                                        bool          *out_readdress_done)
+{
+    if (!io_final_addr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (out_readdress_done) {
+        *out_readdress_done = false;
+    }
+
+    *io_final_addr = requested_addr;
+
+    if (requested_addr < JSY_ADDR_MIN || requested_addr > JSY_ADDR_MAX_HARD) {
+        ESP_LOGW(TAG, "auto_program: requested_addr fora de faixa: %d", requested_addr);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Garante master inicializado para evitar panics
+    esp_err_t init_err = modbus_master_init();
+    if (init_err != ESP_OK) {
+        ESP_LOGE(TAG, "auto_program: modbus_master_init falhou: %s", esp_err_to_name(init_err));
+        return init_err;
+    }
+
+    // Scan enxuto ignorando endereços já cadastrados
+    int found_addr = -1;
+    int found_count = 0;
+
+    for (uint8_t addr = JSY_AUTOPROG_SCAN_MIN; addr <= JSY_AUTOPROG_SCAN_MAX; ++addr) {
+        if (addr_is_used(addr, used_addrs, used_count)) {
+            continue;
+        }
+
+        uint16_t reg = 0;
+        mb_param_request_t req = {
+            .slave_addr = addr,
+            .command    = 3, // FC03 - Holding Registers
+            .reg_start  = JSY_REG_COMM_CONFIG,
+            .reg_size   = 1
+        };
+
+        esp_err_t err = mbc_master_send_request(&req, (void *)&reg);
+        if (err == ESP_OK) {
+            found_addr = addr;
+            found_count++;
+            ESP_LOGI(TAG, "auto_program: JSY respondeu em addr=%u reg=0x%04X", (unsigned)addr, (unsigned)reg);
+            if (found_count > 1) {
+                break;
+            }
+        }
+    }
+
+    if (found_count == 0) {
+        ESP_LOGW(TAG, "auto_program: nenhum JSY novo encontrado no range %u..%u", JSY_AUTOPROG_SCAN_MIN, JSY_AUTOPROG_SCAN_MAX);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (found_count > 1) {
+        ESP_LOGW(TAG, "auto_program: mais de um JSY encontrado (conflito)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Apenas um JSY novo localizado em found_addr
+    if (found_addr == requested_addr) {
+        ESP_LOGI(TAG, "auto_program: dispositivo já está no endereço desejado=%d", requested_addr);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "auto_program: reenderecando %d -> %d", found_addr, requested_addr);
+    int rc = jsy_mk333_change_address((uint8_t)found_addr, (uint8_t)requested_addr);
+    bool change_ok = (rc == 0);
+
+    // Mesmo que a escrita retorne erro, valida se o novo endereço passou a responder
+    uint16_t verify_reg = 0;
+    mb_param_request_t verify_req = {
+        .slave_addr = (uint8_t)requested_addr,
+        .command    = 3,
+        .reg_start  = JSY_REG_COMM_CONFIG,
+        .reg_size   = 1
+    };
+    esp_err_t verify_err = mbc_master_send_request(&verify_req, (void *)&verify_reg);
+    if (verify_err == ESP_OK) {
+        change_ok = true;
+        ESP_LOGI(TAG, "auto_program: confirmacao leu reg=0x%04X em addr=%d", (unsigned)verify_reg, requested_addr);
+    }
+
+    if (change_ok) {
+        *io_final_addr = requested_addr;
+        if (out_readdress_done) {
+            *out_readdress_done = true;
+        }
+        return ESP_OK;
+    }
+
+    *io_final_addr = found_addr;
+    ESP_LOGE(TAG, "auto_program: falha ao reenderecar (rc=%d verify=%s)", rc, esp_err_to_name(verify_err));
+    return (rc != 0) ? (esp_err_t)rc : ESP_FAIL;
 }
 
